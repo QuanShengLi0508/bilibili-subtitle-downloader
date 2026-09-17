@@ -1,0 +1,13 @@
+# Rust 构建产物
+/target/
+.cargo/
+
+# 下载的字幕输出
+字幕输出/
+
+# 本地可执行文件
+*.exe
+
+# 系统文件
+Thumbs.db
+.DS_Store
