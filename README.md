@@ -1,5 +1,7 @@
 # B站字幕/视频下载器
 
+> **下载地址：** [Windows 安装包 / 免安装 ZIP（最新版）](https://github.com/QuanShengLi0508/bilibili-subtitle-downloader/releases/latest)
+
 支持B站、抖音、小红书链接。B站可下载字幕或视频；抖音和小红书可下载视频。
 
 ## 使用
