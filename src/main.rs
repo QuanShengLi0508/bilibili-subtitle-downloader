@@ -1,6 +1,7 @@
 mod bili;
 mod cli;
 mod gui;
+mod transcribe;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();

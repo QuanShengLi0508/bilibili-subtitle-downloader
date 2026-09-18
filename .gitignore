@@ -11,3 +11,8 @@
 # 系统文件
 Thumbs.db
 .DS_Store
+
+# Package artifacts
+/release-package/
+/installer/dist/
+/whisper/

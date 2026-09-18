@@ -1,9 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 use reqwest_cookie_store::CookieStoreMutex;
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn cookie_file() -> PathBuf {
     let base = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
@@ -42,6 +42,14 @@ pub struct SubLine {
     pub from: f64,
     pub to: f64,
     pub content: String,
+}
+
+#[derive(Clone)]
+pub struct VideoStream {
+    pub quality_id: u64,
+    pub label: String,
+    pub video_url: String,
+    pub audio_url: Option<String>,
 }
 
 pub struct QrLogin {
@@ -114,7 +122,8 @@ impl Client {
         if !status.is_success() {
             bail!("HTTP {status}");
         }
-        let v: Value = serde_json::from_str(&text).with_context(|| format!("返回内容不是JSON: {url}"))?;
+        let v: Value =
+            serde_json::from_str(&text).with_context(|| format!("返回内容不是JSON: {url}"))?;
         Ok(v)
     }
 
@@ -125,7 +134,10 @@ impl Client {
             bail!("请输入B站视频链接");
         }
         let lower = input.to_ascii_lowercase();
-        if lower.contains("b23.tv") || lower.starts_with("http") && extract_bvid(input).is_none() && extract_aid(input).is_none()
+        if lower.contains("b23.tv")
+            || lower.starts_with("http")
+                && extract_bvid(input).is_none()
+                && extract_aid(input).is_none()
         {
             // 短链接：跟随重定向拿到最终地址
             let resp = self
@@ -165,12 +177,19 @@ impl Client {
         };
         let v = self.get_json(&api)?;
         if v["code"].as_i64() != Some(0) {
-            bail!("获取视频信息失败: {} ({})", v["message"], v["code"].as_i64().unwrap_or(-1));
+            bail!(
+                "获取视频信息失败: {} ({})",
+                v["message"],
+                v["code"].as_i64().unwrap_or(-1)
+            );
         }
         let data = &v["data"];
         let info = VideoInfo {
             aid: data["aid"].as_i64().unwrap_or(0),
-            bvid: data["bvid"].as_str().unwrap_or(bvid.as_deref().unwrap_or("")).to_string(),
+            bvid: data["bvid"]
+                .as_str()
+                .unwrap_or(bvid.as_deref().unwrap_or(""))
+                .to_string(),
             title: data["title"].as_str().unwrap_or("未知标题").to_string(),
             pages: data["pages"]
                 .as_array()
@@ -198,11 +217,19 @@ impl Client {
             .or_else(|| video.pages.first().map(|p| p.cid))
             .ok_or_else(|| anyhow!("找不到分P {page} 的 cid"))?;
 
-        let query = self.wbi_signed_query(video.aid, cid, &video.bvid)?;
+        let query = self.wbi_signed_query(vec![
+            ("aid".to_string(), video.aid.to_string()),
+            ("cid".to_string(), cid.to_string()),
+            ("bvid".to_string(), video.bvid.clone()),
+        ])?;
         let api = format!("https://api.bilibili.com/x/player/wbi/v2?{query}");
         let v = self.get_json(&api)?;
         if v["code"].as_i64() != Some(0) {
-            bail!("获取字幕列表失败: {} ({})", v["message"], v["code"].as_i64().unwrap_or(-1));
+            bail!(
+                "获取字幕列表失败: {} ({})",
+                v["message"],
+                v["code"].as_i64().unwrap_or(-1)
+            );
         }
         let subs = &v["data"]["subtitle"]["subtitles"];
         let mut tracks = Vec::new();
@@ -228,18 +255,27 @@ impl Client {
     }
 
     pub fn qr_generate(&self) -> Result<QrLogin> {
-        let v = self.get_json("https://passport.bilibili.com/x/passport-login/web/qrcode/generate")?;
+        let v =
+            self.get_json("https://passport.bilibili.com/x/passport-login/web/qrcode/generate")?;
         if v["code"].as_i64() != Some(0) {
-            bail!("获取登录二维码失败: {}", v["message"].as_str().unwrap_or("未知错误"));
+            bail!(
+                "获取登录二维码失败: {}",
+                v["message"].as_str().unwrap_or("未知错误")
+            );
         }
         Ok(QrLogin {
-            qrcode_key: v["data"]["qrcode_key"].as_str().unwrap_or_default().to_string(),
+            qrcode_key: v["data"]["qrcode_key"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             url: v["data"]["url"].as_str().unwrap_or_default().to_string(),
         })
     }
 
     pub fn qr_poll(&self, key: &str) -> Result<QrPoll> {
-        let api = format!("https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={key}");
+        let api = format!(
+            "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={key}"
+        );
         let v = self.get_json(&api)?;
         // 新版接口外层 code 恒为 0，真实状态在 data.code 里（86101未扫码/86090已扫/86038过期/0成功）
         let status = v["data"]["code"].as_i64().or_else(|| v["code"].as_i64());
@@ -261,7 +297,11 @@ impl Client {
             .find(|p| p.page == page)
             .map(|p| p.cid)
             .unwrap_or(0);
-        let query = self.wbi_signed_query(video.aid, cid, &video.bvid)?;
+        let query = self.wbi_signed_query(vec![
+            ("aid".to_string(), video.aid.to_string()),
+            ("cid".to_string(), cid.to_string()),
+            ("bvid".to_string(), video.bvid.clone()),
+        ])?;
         let api = format!("https://api.bilibili.com/x/player/wbi/v2?{query}");
         let v = self.get_json(&api)?;
         Ok(serde_json::to_string_pretty(&v)?)
@@ -283,6 +323,135 @@ impl Client {
         Ok(lines)
     }
 
+    pub fn fetch_streams(&self, video: &VideoInfo, page: usize) -> Result<Vec<VideoStream>> {
+        let cid = video
+            .pages
+            .iter()
+            .find(|p| p.page == page)
+            .map(|p| p.cid)
+            .or_else(|| video.pages.first().map(|p| p.cid))
+            .ok_or_else(|| anyhow!("找不到分P {page} 的 cid"))?;
+
+        let query = self.wbi_signed_query(vec![
+            ("bvid".to_string(), video.bvid.clone()),
+            ("cid".to_string(), cid.to_string()),
+            ("qn".to_string(), "0".to_string()),
+            ("fnval".to_string(), "4048".to_string()),
+            ("fourk".to_string(), "1".to_string()),
+        ])?;
+        let api = format!("https://api.bilibili.com/x/player/wbi/playurl?{query}");
+        let v = self.get_json(&api)?;
+        if v["code"].as_i64() != Some(0) {
+            bail!(
+                "获取播放地址失败: {} ({})",
+                v["message"].as_str().unwrap_or(""),
+                v["code"].as_i64().unwrap_or(-1)
+            );
+        }
+        let data = &v["data"];
+        let mut streams = Vec::new();
+
+        if data["dash"]["video"].as_array().is_some() {
+            let audio_url = data["dash"]["audio"]
+                .as_array()
+                .and_then(|arr| {
+                    arr.iter()
+                        .max_by_key(|a| a["bandwidth"].as_u64().unwrap_or(0))
+                        .and_then(|a| a["base_url"].as_str())
+                })
+                .map(|s| s.to_string());
+
+            // 每个清晰度可能有多条编码（avc/hevc），优先 avc 兼容性更好
+            let mut entries: Vec<(u64, String, bool)> = Vec::new();
+            for item in data["dash"]["video"].as_array().unwrap_or(&Vec::new()) {
+                let id = item["id"].as_u64().unwrap_or(0);
+                let url = item["base_url"].as_str().unwrap_or("");
+                if id == 0 || url.is_empty() {
+                    continue;
+                }
+                let is_avc = item["codecs"].as_str().unwrap_or("").contains("avc");
+                entries.push((id, url.to_string(), is_avc));
+            }
+            let mut seen: Vec<u64> = Vec::new();
+            for (id, _, _) in &entries {
+                if seen.contains(id) {
+                    continue;
+                }
+                seen.push(*id);
+                let best = entries
+                    .iter()
+                    .filter(|(i, _, _)| i == id)
+                    .max_by_key(|(_, _, avc)| *avc as u8)
+                    .unwrap();
+                streams.push(VideoStream {
+                    quality_id: *id,
+                    label: quality_label(*id),
+                    video_url: best.1.clone(),
+                    audio_url: audio_url.clone(),
+                });
+            }
+            streams.sort_by(|a, b| b.quality_id.cmp(&a.quality_id));
+        } else if let Some(first) = data["durl"].as_array().and_then(|a| a.first()) {
+            if let Some(url) = first["url"].as_str() {
+                streams.push(VideoStream {
+                    quality_id: 0,
+                    label: "默认画质".to_string(),
+                    video_url: url.to_string(),
+                    audio_url: None,
+                });
+            }
+        }
+
+        if streams.is_empty() {
+            bail!("没有可用的视频流");
+        }
+        Ok(streams)
+    }
+
+    pub fn ffmpeg_available() -> bool {
+        std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    pub fn download_to_file(
+        &self,
+        url: &str,
+        path: &std::path::Path,
+        progress: &dyn Fn(f64),
+    ) -> Result<()> {
+        use std::io::Read;
+        use std::io::Write;
+        let mut resp = self
+            .http
+            .get(url)
+            .header("Referer", "https://www.bilibili.com/")
+            .header("Accept", "*/*")
+            .send()?;
+        if !resp.status().is_success() {
+            bail!("下载失败: HTTP {}", resp.status());
+        }
+        let total = resp.content_length().unwrap_or(0) as f64;
+        let mut file = std::fs::File::create(path)?;
+        let mut downloaded: u64 = 0;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = resp.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])?;
+            downloaded += n as u64;
+            if total > 0.0 {
+                progress(downloaded as f64 / total);
+            }
+        }
+        file.flush()?;
+        Ok(())
+    }
+
     fn wbi_keys(&self) -> Result<(String, String)> {
         let v = self.get_json("https://api.bilibili.com/x/web-interface/nav")?;
         let img = v["data"]["wbi_img"]["img_url"]
@@ -294,7 +463,7 @@ impl Client {
         Ok((file_key(img)?, file_key(sub)?))
     }
 
-    fn wbi_signed_query(&self, aid: i64, cid: i64, bvid: &str) -> Result<String> {
+    fn wbi_signed_query(&self, mut params: Vec<(String, String)>) -> Result<String> {
         let (img_key, sub_key) = self.wbi_keys()?;
         let combined: String = format!("{img_key}{sub_key}");
         let mixin_key: String = MIXIN_TABLE
@@ -307,12 +476,7 @@ impl Client {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let mut params: Vec<(String, String)> = vec![
-            ("aid".into(), aid.to_string()),
-            ("cid".into(), cid.to_string()),
-            ("bvid".into(), bvid.to_string()),
-            ("wts".into(), wts.to_string()),
-        ];
+        params.push(("wts".into(), wts.to_string()));
         params.sort();
         let query = params
             .iter()
@@ -325,6 +489,28 @@ impl Client {
     }
 }
 
+fn quality_label(id: u64) -> String {
+    let names: &[(u64, &str)] = &[
+        (127, "8K 超高清"),
+        (126, "杜比视界"),
+        (125, "HDR 真彩"),
+        (120, "4K 超清"),
+        (116, "1080P 60帧"),
+        (112, "1080P 高码率"),
+        (100, "智能修复"),
+        (80, "1080P 高清"),
+        (74, "720P 60帧"),
+        (64, "720P 高清"),
+        (32, "480P 清晰"),
+        (16, "360P 流畅"),
+    ];
+    names
+        .iter()
+        .find(|(q, _)| *q == id)
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| format!("清晰度 {id}"))
+}
+
 fn file_key(url: &str) -> Result<String> {
     let name = url.rsplit('/').next().unwrap_or("");
     let key = name.split('.').next().unwrap_or("");
@@ -333,7 +519,6 @@ fn file_key(url: &str) -> Result<String> {
     }
     Ok(key.to_string())
 }
-
 
 fn extract_bvid(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
