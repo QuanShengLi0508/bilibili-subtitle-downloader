@@ -1,7 +1,7 @@
 ; Build from the repository root with Inno Setup 6:
 ;   ISCC.exe installer\installer.iss
 #define MyAppName "B站字幕/视频下载器"
-#define MyAppVersion "1.4.0"
+#define MyAppVersion "1.4.1"
 #define MyAppPublisher "QuanShengLi0508"
 #define MyAppExeName "B站字幕视频下载器.exe"
 

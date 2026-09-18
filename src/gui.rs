@@ -378,7 +378,7 @@ impl App {
         let dir = self.output_dir.clone();
         let tx = self.tx.clone();
         self.busy = true;
-        self.status = "正在调用知乎正文接口...".into();
+        self.status = "正在直接获取知乎正文...".into();
         thread::spawn(move || {
             let _ = tx.send(Msg::ZhihuSaved(zhihu::fetch_to_file(&input, &dir)));
         });
@@ -550,13 +550,13 @@ impl App {
                 },
                 Msg::ZhihuSaved(res) => match res {
                     Ok(path) => self.status = format!("已保存: {}", path.display()),
-                    Err(e) => self.status = format!("自动解析失败: {e:#}"),
+                    Err(e) => self.status = format!("获取文字失败: {e:#}"),
                 },
                 Msg::ZhihuCookieSaved(res) => match res {
                     Ok(()) => {
                         self.zhihu_cookie_saved = true;
                         self.zhihu_cookie.clear();
-                        self.status = "已保存知乎 Cookie，输入链接后可自动解析".into();
+                        self.status = "已保存知乎 Cookie，输入链接后可直接获取文字".into();
                     }
                     Err(e) => self.status = format!("保存 Cookie 失败: {e:#}"),
                 },
@@ -709,7 +709,7 @@ impl eframe::App for App {
                                     .hint_text("知乎回答 / 知乎专栏链接")
                                     .desired_width(ui.available_width() - 96.0),
                             );
-                            if primary_button(ui, "自动解析", enabled) {
+                            if primary_button(ui, "直接获取文字", enabled) {
                                 self.spawn_fetch_zhihu();
                             }
                         });
@@ -754,7 +754,7 @@ impl eframe::App for App {
                                 self.spawn_save_webtext();
                             }
                             ui.label(
-                                egui::RichText::new("自动解析支持知乎回答和专栏")
+                                egui::RichText::new("点击按钮可直接获取知乎正文")
                                     .size(12.0)
                                     .color(egui::Color32::from_gray(150)),
                             );
