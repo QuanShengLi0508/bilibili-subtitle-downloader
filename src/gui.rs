@@ -2,6 +2,7 @@ use crate::bili::{
     lines_to_srt, lines_to_txt, sanitize_filename, Client, QrPoll, SubTrack, VideoInfo, VideoStream,
 };
 use crate::cli::output_dir;
+use crate::external;
 use crate::transcribe;
 use anyhow::Result;
 use eframe::egui;
@@ -24,6 +25,8 @@ enum Msg {
     VideoStage(String),
     VideoProgress(f64),
     VideoSaved(Result<String>),
+    ExternalLoaded(Box<external::ExternalVideo>),
+    ExternalSaved(Result<PathBuf>),
     TranscribeSaved(Result<Vec<PathBuf>>),
     QrReady {
         w: usize,
@@ -46,6 +49,7 @@ struct App {
     streams: Vec<VideoStream>,
     selected_stream: usize,
     video_progress: Option<f64>,
+    external: Option<external::ExternalVideo>,
     media_file: Option<PathBuf>,
     whisper_model: Option<PathBuf>,
     transcribe_language: String,
@@ -73,6 +77,7 @@ impl App {
             streams: Vec::new(),
             selected_stream: 0,
             video_progress: None,
+            external: None,
             media_file: None,
             whisper_model: None,
             transcribe_language: "auto".into(),
@@ -91,7 +96,33 @@ impl App {
             self.status = "请先粘贴链接".into();
             return;
         }
+        self.external = None;
         self.busy = true;
+
+        if external::is_supported(&input) {
+            if self.mode != Mode::Video {
+                self.busy = false;
+                self.status = "抖音/小红书请先切换到「下载视频」".into();
+                return;
+            }
+            let Some(tool) = external::find_yt_dlp() else {
+                self.busy = false;
+                self.status = "未找到 tools/yt-dlp.exe".into();
+                return;
+            };
+            self.status = "正在解析抖音/小红书链接...".into();
+            let tx = self.tx.clone();
+            thread::spawn(move || match external::probe(&input, &tool) {
+                Ok(video) => {
+                    let _ = tx.send(Msg::ExternalLoaded(Box::new(video)));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Failed(format!("解析链接失败: {e:#}")));
+                }
+            });
+            return;
+        }
+
         self.tracks.clear();
         self.streams.clear();
         self.selected_track = 0;
@@ -265,6 +296,28 @@ impl App {
         });
     }
 
+    fn spawn_download_external(&mut self) {
+        let Some(external_video) = self.external.clone() else {
+            return;
+        };
+        let Some(tool) = external::find_yt_dlp() else {
+            self.status = "未找到 tools/yt-dlp.exe".into();
+            return;
+        };
+        let dir = self.output_dir.clone();
+        let tx = self.tx.clone();
+
+        self.busy = true;
+        self.video_progress = Some(0.0);
+        self.status = "正在下载抖音/小红书视频...".into();
+        thread::spawn(move || {
+            let res = external::download(&external_video.url, &tool, &dir, &|p| {
+                let _ = tx.send(Msg::VideoProgress(p));
+            });
+            let _ = tx.send(Msg::ExternalSaved(res));
+        });
+    }
+
     fn spawn_transcribe(&mut self) {
         let Some(media) = self.media_file.clone() else {
             self.status = "请先选择音频或视频文件".into();
@@ -354,6 +407,23 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             self.busy = false;
             match msg {
+                Msg::ExternalLoaded(video) => {
+                    self.video = None;
+                    self.tracks.clear();
+                    self.streams.clear();
+                    self.external = Some(*video);
+                    self.status = "已解析链接，可以下载视频".into();
+                }
+                Msg::ExternalSaved(res) => match res {
+                    Ok(path) => {
+                        self.video_progress = None;
+                        self.status = format!("已保存: {}", path.display());
+                    }
+                    Err(e) => {
+                        self.video_progress = None;
+                        self.status = format!("下载失败: {e:#}");
+                    }
+                },
                 Msg::VideoLoaded(video, page, tracks, streams) => {
                     self.selected_page = page.min(video.pages.len().max(1));
                     self.selected_page = video
@@ -540,9 +610,7 @@ impl eframe::App for App {
                             ui.add_enabled(
                                 enabled,
                                 egui::TextEdit::singleline(&mut self.link)
-                                    .hint_text(
-                                        "https://www.bilibili.com/video/BV... 或 b23.tv 短链接",
-                                    )
+                                    .hint_text("B站 / 抖音 / 小红书视频链接")
                                     .desired_width(ui.available_width() - 96.0),
                             );
                             let fetch_label = if self.mode == Mode::Video {
@@ -714,7 +782,49 @@ impl eframe::App for App {
                     )
                 })
             };
-            if let Some((title, id_text, pages)) = &video_info {
+            if let Some(external_video) = self.external.clone() {
+                ui.add_space(10.0);
+                egui::Frame::default()
+                    .fill(egui::Color32::WHITE)
+                    .rounding(10.0)
+                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(external_video.title)
+                                .size(15.0)
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new("抖音 / 小红书")
+                                .size(12.0)
+                                .color(egui::Color32::from_gray(150)),
+                        );
+
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if primary_button(ui, "下载视频", !self.busy) {
+                                self.spawn_download_external();
+                            }
+                            ui.label(
+                                egui::RichText::new("自动选择最佳画质并输出 MP4")
+                                    .size(12.0)
+                                    .color(egui::Color32::from_gray(150)),
+                            );
+                        });
+
+                        if self.busy {
+                            if let Some(progress) = self.video_progress {
+                                ui.add_space(6.0);
+                                ui.add(
+                                    egui::ProgressBar::new(progress as f32)
+                                        .desired_width(ui.available_width())
+                                        .show_percentage(),
+                                );
+                            }
+                        }
+                    });
+            } else if let Some((title, id_text, pages)) = &video_info {
                 ui.add_space(10.0);
                 egui::Frame::default()
                     .fill(egui::Color32::WHITE)

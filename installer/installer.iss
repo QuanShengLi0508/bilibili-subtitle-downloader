@@ -1,7 +1,7 @@
 ; Build from the repository root with Inno Setup 6:
 ;   ISCC.exe installer\installer.iss
 #define MyAppName "B站字幕/视频下载器"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "QuanShengLi0508"
 #define MyAppExeName "B站字幕视频下载器.exe"
 
@@ -28,6 +28,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "..\target\release\bili-subtitle-downloader.exe"; DestName: "{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\tools\yt-dlp.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\whisper\whisper-cli.exe"; DestDir: "{app}\whisper"; Flags: ignoreversion
 Source: "..\whisper\ggml-base-q5_1.bin"; DestDir: "{app}\whisper"; Flags: ignoreversion
 

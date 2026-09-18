@@ -1,6 +1,6 @@
 # B站字幕/视频下载器
 
-输入B站视频链接，下载视频的 CC 字幕（TXT / SRT）或下载视频（MP4，可选清晰度）。
+支持B站、抖音、小红书链接。B站可下载字幕或视频；抖音和小红书可下载视频。
 
 ## 使用
 
@@ -57,6 +57,12 @@ bili-subtitle-downloader.exe --video BV1xxxxxxxx 80
 - 视频和字幕仅保存到本机，本程序不会上传任何内容。
 - 基于 [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect) 社区公开接口实现，含 WBI 签名。
 
+## 抖音 / 小红书
+
+把视频链接粘贴到顶部，切换到「下载视频」后点「获取视频」。程序会自动用内置的 yt-dlp 解析链接，然后下载最佳画质并输出 MP4。
+
+支持 `douyin.com`、`iesdouyin.com`、`xiaohongshu.com`、`xhslink.com` 链接。
+
 ## 音频/视频转文字
 
 在图形界面选择「音频/视频转文字」模式，选择本地音频或视频文件后点击「开始识别」。程序会用 ffmpeg 提取 16kHz 单声道音频，然后用内置的 whisper-cli 生成 TXT 和 SRT。
@@ -71,3 +77,8 @@ bili-subtitle-downloader.exe --video BV1xxxxxxxx 80
 ```powershell
 cargo build --release
 ```
+
+### 第三方组件
+
+- 抖音 / 小红书下载使用 [yt-dlp](https://github.com/yt-dlp/yt-dlp)。安装包里已包含 `tools/yt-dlp.exe`；如果自己编译，请从 yt-dlp 的 Release 页下载该文件并放到 `tools/yt-dlp.exe`。
+- 本地语音识别使用 [whisper.cpp](https://github.com/ggml-org/whisper.cpp)。安装包里已包含 `whisper-cli.exe` 和基础模型；如果自己编译，也需要把对应文件放到 `whisper/` 文件夹。

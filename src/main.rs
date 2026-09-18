@@ -1,5 +1,6 @@
 mod bili;
 mod cli;
+mod external;
 mod gui;
 mod transcribe;
 

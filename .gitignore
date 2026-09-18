@@ -16,3 +16,6 @@ Thumbs.db
 /release-package/
 /installer/dist/
 /whisper/
+
+# Third-party binaries
+/tools/
