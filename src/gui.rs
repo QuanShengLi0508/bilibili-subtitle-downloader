@@ -5,6 +5,7 @@ use crate::cli::output_dir;
 use crate::external;
 use crate::transcribe;
 use crate::webtext;
+use crate::zhihu;
 use anyhow::Result;
 use eframe::egui;
 use std::path::PathBuf;
@@ -31,6 +32,8 @@ enum Msg {
     ExternalSaved(Result<PathBuf>),
     TranscribeSaved(Result<Vec<PathBuf>>),
     WebTextSaved(Result<PathBuf>),
+    ZhihuSaved(Result<PathBuf>),
+    ZhihuCookieSaved(Result<()>),
     QrReady {
         w: usize,
         pixels: Vec<egui::Color32>,
@@ -57,6 +60,8 @@ struct App {
     whisper_model: Option<PathBuf>,
     transcribe_language: String,
     output_dir: PathBuf,
+    zhihu_cookie: String,
+    zhihu_cookie_saved: bool,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     qr_texture: Option<egui::TextureHandle>,
@@ -85,6 +90,8 @@ impl App {
             whisper_model: None,
             transcribe_language: "auto".into(),
             output_dir: output_dir(),
+            zhihu_cookie: String::new(),
+            zhihu_cookie_saved: zhihu::has_saved_cookies(),
             tx,
             rx,
             qr_texture: None,
@@ -362,6 +369,35 @@ impl App {
         });
     }
 
+    fn spawn_fetch_zhihu(&mut self) {
+        let input = self.link.trim().to_string();
+        if input.is_empty() {
+            self.status = "请先粘贴知乎回答或专栏链接".into();
+            return;
+        }
+        let dir = self.output_dir.clone();
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "正在调用知乎正文接口...".into();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::ZhihuSaved(zhihu::fetch_to_file(&input, &dir)));
+        });
+    }
+
+    fn spawn_save_zhihu_cookie(&mut self) {
+        let cookie = self.zhihu_cookie.trim().to_string();
+        if cookie.is_empty() {
+            self.status = "请先粘贴知乎 Cookie".into();
+            return;
+        }
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "正在保存知乎 Cookie...".into();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::ZhihuCookieSaved(zhihu::save_cookie(&cookie)));
+        });
+    }
+
     fn spawn_save_webtext(&mut self) {
         let dir = self.output_dir.clone();
         let tx = self.tx.clone();
@@ -512,6 +548,18 @@ impl App {
                     }
                     Err(e) => self.status = format!("提取失败: {e:#}"),
                 },
+                Msg::ZhihuSaved(res) => match res {
+                    Ok(path) => self.status = format!("已保存: {}", path.display()),
+                    Err(e) => self.status = format!("自动解析失败: {e:#}"),
+                },
+                Msg::ZhihuCookieSaved(res) => match res {
+                    Ok(()) => {
+                        self.zhihu_cookie_saved = true;
+                        self.zhihu_cookie.clear();
+                        self.status = "已保存知乎 Cookie，输入链接后可自动解析".into();
+                    }
+                    Err(e) => self.status = format!("保存 Cookie 失败: {e:#}"),
+                },
                 Msg::TranscribeSaved(res) => match res {
                     Ok(paths) => {
                         let texts: Vec<String> =
@@ -638,6 +686,9 @@ impl eframe::App for App {
                     .selectable_label(self.mode == Mode::WebText, "网页/知乎文本")
                     .clicked()
                 {
+                    if self.mode != Mode::WebText {
+                        self.zhihu_cookie.clear();
+                    }
                     self.mode = Mode::WebText;
                 }
             });
@@ -655,34 +706,60 @@ impl eframe::App for App {
                             ui.add_enabled(
                                 enabled,
                                 egui::TextEdit::singleline(&mut self.link)
-                                    .hint_text("知乎回答 / 专栏 / 其他网页链接")
+                                    .hint_text("知乎回答 / 知乎专栏链接")
                                     .desired_width(ui.available_width() - 96.0),
                             );
-                            if secondary_button(ui, "打开链接", enabled) {
-                                self.spawn_open_link();
+                            if primary_button(ui, "自动解析", enabled) {
+                                self.spawn_fetch_zhihu();
                             }
                         });
 
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "在打开的页面里选中正文并复制，然后点下方按钮保存。",
-                            )
-                            .size(12.0)
-                            .color(egui::Color32::from_gray(120)),
-                        );
+                        ui.add_space(8.0);
+                        if self.zhihu_cookie_saved {
+                            ui.label(
+                                egui::RichText::new("已保存知乎 Cookie，回答和专栏会自动请求正文接口。")
+                                    .size(12.0)
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("知乎接口需要登录。先打开知乎登录，再从浏览器复制整串 Cookie 到下面。")
+                                    .size(12.0)
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                            ui.add_space(6.0);
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.zhihu_cookie)
+                                    .hint_text("粘贴浏览器开发者工具里的 Cookie 请求头")
+                                    .desired_rows(3)
+                                    .desired_width(ui.available_width()),
+                            );
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if secondary_button(ui, "打开知乎登录", !self.busy) {
+                                    let _ = webbrowser::open("https://www.zhihu.com/signin?next=%2F");
+                                }
+                                if primary_button(ui, "保存 Cookie", !self.busy) {
+                                    self.spawn_save_zhihu_cookie();
+                                }
+                            });
+                        }
 
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            if primary_button(ui, "保存剪贴板为 TXT", !self.busy) {
+                            if secondary_button(ui, "打开链接", !self.busy) {
+                                self.spawn_open_link();
+                            }
+                            if secondary_button(ui, "保存剪贴板为 TXT", !self.busy) {
                                 self.spawn_save_webtext();
                             }
                             ui.label(
-                                egui::RichText::new("支持知乎回答、专栏和其他网页")
+                                egui::RichText::new("自动解析支持知乎回答和专栏")
                                     .size(12.0)
                                     .color(egui::Color32::from_gray(150)),
                             );
                         });
+
                     });
             } else if self.mode != Mode::Transcribe {
                 egui::Frame::default()

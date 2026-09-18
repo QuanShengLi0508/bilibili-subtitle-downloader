@@ -4,6 +4,7 @@ mod external;
 mod gui;
 mod transcribe;
 mod webtext;
+mod zhihu;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
