@@ -4,6 +4,7 @@ use crate::bili::{
 use crate::cli::output_dir;
 use crate::external;
 use crate::transcribe;
+use crate::webtext;
 use anyhow::Result;
 use eframe::egui;
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ enum Mode {
     Subtitle,
     Video,
     Transcribe,
+    WebText,
 }
 
 enum Msg {
@@ -28,6 +30,7 @@ enum Msg {
     ExternalLoaded(Box<external::ExternalVideo>),
     ExternalSaved(Result<PathBuf>),
     TranscribeSaved(Result<Vec<PathBuf>>),
+    WebTextSaved(Result<PathBuf>),
     QrReady {
         w: usize,
         pixels: Vec<egui::Color32>,
@@ -343,6 +346,32 @@ impl App {
         });
     }
 
+    fn spawn_open_link(&mut self) {
+        let input = self.link.trim().to_string();
+        if input.is_empty() {
+            self.status = "请先粘贴知乎或网页链接".into();
+            return;
+        }
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "正在打开链接...".into();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::WebTextSaved(
+                webtext::open(&input).map(|_| PathBuf::new()),
+            ));
+        });
+    }
+
+    fn spawn_save_webtext(&mut self) {
+        let dir = self.output_dir.clone();
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "正在读取剪贴板...".into();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::WebTextSaved(webtext::save_clipboard_text(&dir)));
+        });
+    }
+
     fn spawn_qr_login(&mut self) {
         self.busy = true;
         self.status = "正在生成登录二维码...".into();
@@ -473,6 +502,16 @@ impl App {
                 }
                 Msg::VideoStage(s) => self.status = s,
                 Msg::VideoProgress(p) => self.video_progress = Some(p.clamp(0.0, 1.0)),
+                Msg::WebTextSaved(res) => match res {
+                    Ok(path) => {
+                        if path.as_os_str().is_empty() {
+                            self.status = "已在浏览器打开，请在知乎页面复制文本".into();
+                        } else {
+                            self.status = format!("已保存: {}", path.display());
+                        }
+                    }
+                    Err(e) => self.status = format!("提取失败: {e:#}"),
+                },
                 Msg::TranscribeSaved(res) => match res {
                     Ok(paths) => {
                         let texts: Vec<String> =
@@ -595,10 +634,57 @@ impl eframe::App for App {
                 {
                     self.mode = Mode::Transcribe;
                 }
+                if ui
+                    .selectable_label(self.mode == Mode::WebText, "网页/知乎文本")
+                    .clicked()
+                {
+                    self.mode = Mode::WebText;
+                }
             });
             ui.add_space(6.0);
 
-            if self.mode != Mode::Transcribe {
+            if self.mode == Mode::WebText {
+                egui::Frame::default()
+                    .fill(egui::Color32::WHITE)
+                    .rounding(10.0)
+                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let enabled = !self.busy;
+                            ui.add_enabled(
+                                enabled,
+                                egui::TextEdit::singleline(&mut self.link)
+                                    .hint_text("知乎回答 / 专栏 / 其他网页链接")
+                                    .desired_width(ui.available_width() - 96.0),
+                            );
+                            if secondary_button(ui, "打开链接", enabled) {
+                                self.spawn_open_link();
+                            }
+                        });
+
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "在打开的页面里选中正文并复制，然后点下方按钮保存。",
+                            )
+                            .size(12.0)
+                            .color(egui::Color32::from_gray(120)),
+                        );
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if primary_button(ui, "保存剪贴板为 TXT", !self.busy) {
+                                self.spawn_save_webtext();
+                            }
+                            ui.label(
+                                egui::RichText::new("支持知乎回答、专栏和其他网页")
+                                    .size(12.0)
+                                    .color(egui::Color32::from_gray(150)),
+                            );
+                        });
+                    });
+            } else if self.mode != Mode::Transcribe {
                 egui::Frame::default()
                     .fill(egui::Color32::WHITE)
                     .rounding(10.0)

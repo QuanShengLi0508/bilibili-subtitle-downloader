@@ -65,6 +65,12 @@ bili-subtitle-downloader.exe --video BV1xxxxxxxx 80
 
 支持 `douyin.com`、`iesdouyin.com`、`xiaohongshu.com`、`xhslink.com` 链接。
 
+## 知乎 / 网页文本
+
+选择「网页/知乎文本」模式，粘贴知乎回答、专栏或其他网页链接，点「打开链接」。在网页里选中并复制正文后，回到本程序点「保存剪贴板为 TXT」。
+
+这个方式不绕过知乎的反爬和登录限制，但适合手动快速把网页正文变成 TXT。
+
 ## 音频/视频转文字
 
 在图形界面选择「音频/视频转文字」模式，选择本地音频或视频文件后点击「开始识别」。程序会用 ffmpeg 提取 16kHz 单声道音频，然后用内置的 whisper-cli 生成 TXT 和 SRT。

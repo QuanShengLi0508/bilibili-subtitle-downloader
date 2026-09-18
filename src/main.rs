@@ -3,6 +3,7 @@ mod cli;
 mod external;
 mod gui;
 mod transcribe;
+mod webtext;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
