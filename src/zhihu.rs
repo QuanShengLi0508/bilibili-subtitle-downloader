@@ -123,6 +123,9 @@ fn error_message(value: &Value, status: u16) -> String {
     if name == "1001" || name.eq_ignore_ascii_case("need_login") {
         return "知乎暂时限制了这个链接，请稍后再试".into();
     }
+    if status == 404 || name == "ResourceNotFoundException" {
+        return "这个知乎链接不存在或内容已删除".into();
+    }
     if !message.is_empty() {
         return format!("知乎接口返回错误: {message}");
     }

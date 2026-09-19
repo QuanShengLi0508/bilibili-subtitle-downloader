@@ -492,8 +492,14 @@ impl App {
                 Msg::VideoStage(s) => self.status = s,
                 Msg::VideoProgress(p) => self.video_progress = Some(p.clamp(0.0, 1.0)),
                 Msg::ZhihuSaved(res) => match res {
-                    Ok(path) => self.status = format!("已保存: {}", path.display()),
-                    Err(e) => self.status = format!("获取文字失败: {e:#}"),
+                    Ok(path) => {
+                        self.busy = false;
+                        self.status = format!("已保存: {}", path.display());
+                    }
+                    Err(e) => {
+                        self.busy = false;
+                        self.status = format!("获取文字失败: {e:#}");
+                    }
                 },
                 Msg::TranscribeSaved(res) => match res {
                     Ok(paths) => {
