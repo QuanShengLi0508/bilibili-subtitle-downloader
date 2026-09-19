@@ -1,6 +1,6 @@
 [package]
 name = "bili-subtitle-downloader"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2021"
 description = "输入B站链接下载字幕的桌面应用"
 
@@ -14,10 +14,8 @@ md5 = "0.7"
 qrcode = "0.14"
 reqwest_cookie_store = "0.8"
 cookie_store = "0.21"
-arboard = "3.6.1"
-webbrowser = "1.2.4"
-zhihu_sign = "0.1.0"
 html2text = "0.17.1"
+zhihu_sign = "0.1.0"
 
 [profile.release]
 opt-level = 3

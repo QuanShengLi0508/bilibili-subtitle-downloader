@@ -3,7 +3,6 @@ mod cli;
 mod external;
 mod gui;
 mod transcribe;
-mod webtext;
 mod zhihu;
 
 fn main() -> eframe::Result<()> {

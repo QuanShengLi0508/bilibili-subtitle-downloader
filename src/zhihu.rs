@@ -1,74 +1,14 @@
 use crate::bili::sanitize_filename;
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, COOKIE, REFERER, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, COOKIE, REFERER, USER_AGENT};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Target {
     Answer(String),
     Article(String),
-}
-
-fn cookie_file() -> PathBuf {
-    let base = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
-    PathBuf::from(base).join(".zhihu-cookies.json")
-}
-
-pub fn has_saved_cookies() -> bool {
-    cookie_file().exists()
-}
-
-pub fn save_cookie(raw: &str) -> Result<()> {
-    let cookie = normalize_cookie(raw)?;
-    if extract_cookie_value(&cookie, "d_c0").is_none() {
-        bail!("Cookie 里没有找到 d_c0");
-    }
-    if extract_cookie_value(&cookie, "z_c0").is_none() {
-        bail!("Cookie 里没有找到 z_c0，请确认已在浏览器登录知乎");
-    }
-    let value = serde_json::json!({ "cookie": cookie });
-    std::fs::write(cookie_file(), serde_json::to_string_pretty(&value)?)?;
-    Ok(())
-}
-
-fn load_cookie() -> Result<String> {
-    let text = std::fs::read_to_string(cookie_file()).context("读取知乎 Cookie 失败")?;
-    let value: Value = serde_json::from_str(&text).context("知乎 Cookie 文件格式错误")?;
-    let cookie = value
-        .get("cookie")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if cookie.is_empty() {
-        bail!("知乎 Cookie 为空，请重新保存");
-    }
-    Ok(cookie)
-}
-
-fn normalize_cookie(raw: &str) -> Result<String> {
-    let value = raw.trim().strip_prefix("Cookie:").unwrap_or(raw.trim());
-    let value = value.trim();
-    if value.is_empty() {
-        bail!("请先粘贴浏览器里的知乎 Cookie");
-    }
-    if !value.contains("d_c0=") || !value.contains("z_c0=") {
-        bail!("Cookie 里必须包含 d_c0 和 z_c0");
-    }
-    Ok(value.to_string())
-}
-
-fn extract_cookie_value(cookie: &str, name: &str) -> Option<String> {
-    cookie.split(';').find_map(|part| {
-        let (key, value) = part.trim().split_once('=')?;
-        if key.trim().eq_ignore_ascii_case(name) {
-            Some(value.trim().to_string())
-        } else {
-            None
-        }
-    })
 }
 
 fn parse_target(input: &str) -> Result<Target> {
@@ -88,47 +28,37 @@ fn parse_target(input: &str) -> Result<Target> {
         bail!("请输入知乎回答或专栏链接");
     }
 
-    let segments: Vec<String> = url
-        .path_segments()
-        .map(|parts| {
-            parts
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    for index in 0..segments.len().saturating_sub(1) {
-        match segments[index].as_str() {
-            "answer" => {
-                let id = &segments[index + 1];
-                if id.chars().all(|c| c.is_ascii_digit()) {
-                    return Ok(Target::Answer(id.clone()));
-                }
-            }
-            "p" => {
-                let id = &segments[index + 1];
-                if id.chars().all(|c| c.is_ascii_digit()) {
-                    return Ok(Target::Article(id.clone()));
-                }
-            }
-            "article" => {
-                let id = &segments[index + 1];
-                if id.chars().all(|c| c.is_ascii_digit()) {
-                    return Ok(Target::Article(id.clone()));
-                }
-            }
-            _ => {}
-        }
+    let path = url.path();
+    if let Some(id) = capture_after(path, "answer/") {
+        return Ok(Target::Answer(id));
+    }
+    if let Some(id) = capture_after(path, "p/") {
+        return Ok(Target::Article(id));
+    }
+    if let Some(id) = capture_after(path, "article/") {
+        return Ok(Target::Article(id));
     }
 
     bail!("只支持知乎回答链接或专栏链接");
 }
 
+fn capture_after(path: &str, marker: &str) -> Option<String> {
+    let start = path.find(marker)? + marker.len();
+    let rest = &path[start..];
+    let id: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
 fn api_url(target: &Target) -> String {
     match target {
-        Target::Answer(id) => format!("https://www.zhihu.com/api/v4/answers/{id}"),
-        Target::Article(id) => format!("https://www.zhihu.com/api/v4/articles/{id}"),
+        Target::Answer(id) => {
+            format!("https://www.zhihu.com/api/v4/answers/{id}?include=data%5B*%5D.content")
+        }
+        Target::Article(id) => format!("https://zhuanlan.zhihu.com/api/articles/{id}"),
     }
 }
 
@@ -144,19 +74,25 @@ fn html_to_text(html: &str) -> Result<String> {
         .trim()
         .to_string();
     if text.is_empty() {
-        bail!("知乎接口没有返回正文，可能登录状态已过期");
+        bail!("知乎接口没有返回正文");
     }
     Ok(text)
 }
 
 fn pick_title(value: &Value, target: &Target) -> String {
     let title = value
-        .get("title")
+        .pointer("/question/title")
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .or_else(|| {
             value
-                .pointer("/question/title")
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            value
+                .get("excerpt_title")
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
         })
@@ -176,53 +112,81 @@ fn pick_title(value: &Value, target: &Target) -> String {
 
 fn error_message(value: &Value, status: u16) -> String {
     let name = value
-        .get("error")
-        .and_then(|e| e.get("name"))
+        .pointer("/error/name")
         .and_then(Value::as_str)
         .unwrap_or_default();
     let message = value
-        .get("error")
-        .and_then(|e| e.get("message"))
+        .pointer("/error/message")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !name.is_empty() || !message.is_empty() {
-        if name == "need_login" {
-            return "知乎要求登录，Cookie 可能已过期，请重新保存 Cookie".into();
-        }
-        if !message.is_empty() {
-            return format!("知乎接口返回错误: {message}");
-        }
+
+    if name == "1001" || name.eq_ignore_ascii_case("need_login") {
+        return "知乎暂时限制了这个链接，请稍后再试".into();
+    }
+    if !message.is_empty() {
+        return format!("知乎接口返回错误: {message}");
+    }
+    if !name.is_empty() {
         return format!("知乎接口返回错误: {name}");
     }
     format!("知乎接口请求失败（HTTP {status}）")
 }
 
-pub fn fetch_to_file(input: &str, output_dir: &std::path::Path) -> Result<PathBuf> {
-    let target = parse_target(input)?;
-    let cookie = load_cookie()?;
-    let d_c0 =
-        extract_cookie_value(&cookie, "d_c0").context("知乎 Cookie 缺少 d_c0，请重新保存")?;
-    let page_url = match &target {
-        Target::Answer(id) => format!("https://www.zhihu.com/question/0/answer/{id}"),
-        Target::Article(id) => format!("https://zhuanlan.zhihu.com/p/{id}"),
-    };
-    let endpoint = api_url(&target);
+fn fetch_json(target: &Target) -> Result<Value> {
+    let endpoint = api_url(target);
+    // The public endpoint accepts an anonymous fingerprint when the request is
+    // signed consistently; this fixed value is only used to build that signature.
+    let d_c0 = "ZhihuAnonymousFingerprint00000000000000";
+    let signed = zhihu_sign::sign_zhihu_request(&endpoint, d_c0, None);
 
-    let signed = zhihu_sign::sign_zhihu_request(&endpoint, &d_c0, None);
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"),
+        HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0"),
+    );
+    headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+    headers.insert(
+        HeaderName::from_static("accept-language"),
+        HeaderValue::from_static("zh-CN,zh;q=0.9"),
     );
     headers.insert(
-        ACCEPT,
-        HeaderValue::from_static("application/json, text/plain, */*"),
+        HeaderName::from_static("origin"),
+        HeaderValue::from_static("https://zhuanlan.zhihu.com"),
     );
-    headers.insert(REFERER, HeaderValue::from_str(&page_url)?);
-    headers.insert(COOKIE, HeaderValue::from_str(&cookie)?);
+    headers.insert(
+        REFERER,
+        HeaderValue::from_static("https://zhuanlan.zhihu.com/"),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-ch-ua"),
+        HeaderValue::from_static(
+            "\"Microsoft Edge\";v=\"123\", \"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"123\"",
+        ),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-ch-ua-mobile"),
+        HeaderValue::from_static("?0"),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-ch-ua-platform"),
+        HeaderValue::from_static("\"Windows\""),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-fetch-dest"),
+        HeaderValue::from_static("empty"),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-fetch-mode"),
+        HeaderValue::from_static("cors"),
+    );
+    headers.insert(
+        HeaderName::from_static("sec-fetch-site"),
+        HeaderValue::from_static("same-site"),
+    );
+    headers.insert(COOKIE, HeaderValue::from_str(&format!("d_c0={d_c0}"))?);
     for (name, value) in signed {
         headers.insert(
-            reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
+            HeaderName::from_bytes(name.as_bytes())?,
             HeaderValue::from_str(&value)?,
         );
     }
@@ -230,27 +194,35 @@ pub fn fetch_to_file(input: &str, output_dir: &std::path::Path) -> Result<PathBu
     let response = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?
-        .get(&endpoint)
+        .get(endpoint)
         .headers(headers)
         .send()?;
-
     let status = response.status();
-    let body: Value = response.json().context("知乎接口返回内容不是 JSON")?;
+    let text = response.text().context("读取知乎接口响应失败")?;
+    let body: Value = serde_json::from_str(&text)
+        .with_context(|| format!("知乎接口返回内容不是 JSON（HTTP {}）", status.as_u16()))?;
+
     if !status.is_success() || body.get("error").is_some() {
         bail!("{}", error_message(&body, status.as_u16()));
     }
+    Ok(body)
+}
 
+pub fn fetch_to_file(input: &str, output_dir: &Path) -> Result<PathBuf> {
+    let target = parse_target(input)?;
+    let body = fetch_json(&target)?;
     let title = pick_title(&body, &target);
     let html = body
         .get("content")
         .and_then(Value::as_str)
+        .or_else(|| body.get("content_html").and_then(Value::as_str))
+        .filter(|s| !s.trim().is_empty())
         .context("知乎接口没有返回正文")?;
     let text = html_to_text(html)?;
-    let content = format!("{}\n\n{}", title, text);
+    let content = format!("{title}\n\n{text}");
 
     std::fs::create_dir_all(output_dir)?;
-    let name = sanitize_filename(&title);
-    let path = output_dir.join(format!("{name}.txt"));
+    let path = output_dir.join(format!("{}.txt", sanitize_filename(&title)));
     std::fs::write(&path, content)?;
     Ok(path)
 }
@@ -279,10 +251,18 @@ mod tests {
     fn rejects_non_zhihu_links() {
         assert!(parse_target("https://example.com/question/1/answer/2").is_err());
     }
+}
+#[test]
+#[ignore = "需要网络，验证真实知乎链接"]
+fn fetches_real_answer_and_article() {
+    let dir = std::path::Path::new("target/tmp/zhihu-test");
+    let answer = fetch_to_file(
+        "https://www.zhihu.com/question/67287444/answer/251460831",
+        dir,
+    )
+    .unwrap();
+    assert!(std::fs::read_to_string(answer).unwrap().len() > 100);
 
-    #[test]
-    fn extracts_cookie_values() {
-        let value = extract_cookie_value("d_c0=abc; z_c0=def", "z_c0").unwrap();
-        assert_eq!(value, "def");
-    }
+    let article = fetch_to_file("https://zhuanlan.zhihu.com/p/2048549405612041923", dir).unwrap();
+    assert!(std::fs::read_to_string(article).unwrap().len() > 100);
 }
