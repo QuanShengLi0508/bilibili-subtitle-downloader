@@ -56,7 +56,7 @@ fn capture_after(path: &str, marker: &str) -> Option<String> {
 fn api_url(target: &Target) -> String {
     match target {
         Target::Answer(id) => {
-            format!("https://www.zhihu.com/api/v4/answers/{id}?include=data%5B*%5D.content")
+            format!("https://api.zhihu.com/v4/answers/{id}?include=content,author,question")
         }
         Target::Article(id) => format!("https://zhuanlan.zhihu.com/api/articles/{id}"),
     }
