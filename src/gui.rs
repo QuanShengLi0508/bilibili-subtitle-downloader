@@ -30,7 +30,7 @@ enum Msg {
     ExternalLoaded(Box<external::ExternalVideo>),
     ExternalSaved(Result<PathBuf>),
     TranscribeSaved(Result<Vec<PathBuf>>),
-    ZhihuSaved(Result<PathBuf>),
+    ZhihuSaved(Result<zhihu::ZhihuExport>),
     QrReady {
         w: usize,
         pixels: Vec<egui::Color32>,
@@ -56,6 +56,8 @@ struct App {
     media_file: Option<PathBuf>,
     whisper_model: Option<PathBuf>,
     transcribe_language: String,
+    zhihu_from: String,
+    zhihu_to: String,
     output_dir: PathBuf,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -84,6 +86,8 @@ impl App {
             media_file: None,
             whisper_model: None,
             transcribe_language: "auto".into(),
+            zhihu_from: String::new(),
+            zhihu_to: String::new(),
             output_dir: output_dir(),
             tx,
             rx,
@@ -356,8 +360,44 @@ impl App {
         let tx = self.tx.clone();
         self.busy = true;
         self.status = "正在直接获取知乎正文...".into();
+        let parse_bound = |text: &str, label: &str| -> std::result::Result<Option<usize>, String> {
+            let text = text.trim();
+            if text.is_empty() {
+                Ok(None)
+            } else {
+                match text.parse::<usize>() {
+                    Ok(v) if v >= 1 => Ok(Some(v)),
+                    _ => Err(format!("{label}必须是大于0的数字")),
+                }
+            }
+        };
+        let from = match parse_bound(&self.zhihu_from, "起始回答序号") {
+            Ok(v) => v,
+            Err(e) => {
+                self.busy = false;
+                self.status = e;
+                return;
+            }
+        };
+        let to = match parse_bound(&self.zhihu_to, "结束回答序号") {
+            Ok(v) => v,
+            Err(e) => {
+                self.busy = false;
+                self.status = e;
+                return;
+            }
+        };
+        if let (Some(f), Some(t)) = (from, to) {
+            if t < f {
+                self.busy = false;
+                self.status = "结束回答序号不能小于起始回答序号".into();
+                return;
+            }
+        }
         thread::spawn(move || {
-            let _ = tx.send(Msg::ZhihuSaved(zhihu::fetch_to_file(&input, &dir)));
+            let _ = tx.send(Msg::ZhihuSaved(zhihu::fetch_to_file_range(
+                &input, &dir, from, to,
+            )));
         });
     }
 
@@ -652,6 +692,37 @@ impl eframe::App for App {
                             }
                         });
                     });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("回答范围")
+                            .size(13.0)
+                            .color(egui::Color32::from_gray(120)),
+                    );
+                    ui.add_enabled(
+                        !self.busy,
+                        egui::TextEdit::singleline(&mut self.zhihu_from)
+                            .hint_text("起始，如 1")
+                            .desired_width(90.0),
+                    );
+                    ui.label(
+                        egui::RichText::new("到")
+                            .size(13.0)
+                            .color(egui::Color32::from_gray(120)),
+                    );
+                    ui.add_enabled(
+                        !self.busy,
+                        egui::TextEdit::singleline(&mut self.zhihu_to)
+                            .hint_text("结束，如 200")
+                            .desired_width(90.0),
+                    );
+                    ui.label(
+                        egui::RichText::new("留空导出全部，仅对问题链接生效")
+                            .size(12.0)
+                            .color(egui::Color32::from_gray(150)),
+                    );
+                });
             } else if self.mode != Mode::Transcribe {
                 egui::Frame::default()
                     .fill(egui::Color32::WHITE)

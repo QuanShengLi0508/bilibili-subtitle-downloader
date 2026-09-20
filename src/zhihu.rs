@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 enum Target {
     Answer(String),
+    Question(String),
     Article(String),
 }
 
@@ -25,12 +26,15 @@ fn parse_target(input: &str) -> Result<Target> {
         || host == "zhuanlan.zhihu.com"
         || host.ends_with(".zhihu.com"))
     {
-        bail!("请输入知乎回答或专栏链接");
+        bail!("只支持知乎问题、回答或专栏链接");
     }
 
     let path = url.path();
     if let Some(id) = capture_after(path, "answer/") {
         return Ok(Target::Answer(id));
+    }
+    if let Some(id) = capture_after(path, "question/") {
+        return Ok(Target::Question(id));
     }
     if let Some(id) = capture_after(path, "p/") {
         return Ok(Target::Article(id));
@@ -39,7 +43,7 @@ fn parse_target(input: &str) -> Result<Target> {
         return Ok(Target::Article(id));
     }
 
-    bail!("只支持知乎回答链接或专栏链接");
+    bail!("只支持知乎问题、回答或专栏链接");
 }
 
 fn capture_after(path: &str, marker: &str) -> Option<String> {
@@ -58,6 +62,9 @@ fn api_url(target: &Target) -> String {
         Target::Answer(id) => {
             format!("https://api.zhihu.com/v4/answers/{id}?include=content,author,question")
         }
+        Target::Question(id) => format!(
+            "https://api.zhihu.com/v4/questions/{id}/answers?include=content,author,question&limit=20&offset=0"
+        ),
         Target::Article(id) => format!("https://zhuanlan.zhihu.com/api/articles/{id}"),
     }
 }
@@ -103,6 +110,7 @@ fn pick_title(value: &Value, target: &Target) -> String {
     if title.is_empty() {
         match target {
             Target::Answer(id) => format!("知乎回答_{id}"),
+            Target::Question(id) => format!("知乎问题_{id}"),
             Target::Article(id) => format!("知乎专栏_{id}"),
         }
     } else {
@@ -135,8 +143,7 @@ fn error_message(value: &Value, status: u16) -> String {
     format!("知乎接口请求失败（HTTP {status}）")
 }
 
-fn fetch_json(target: &Target) -> Result<Value> {
-    let endpoint = api_url(target);
+fn fetch_endpoint(endpoint: &str) -> Result<Value> {
     // The public endpoint accepts an anonymous fingerprint when the request is
     // signed consistently; this fixed value is only used to build that signature.
     let d_c0 = "ZhihuAnonymousFingerprint00000000000000";
@@ -211,9 +218,185 @@ fn fetch_json(target: &Target) -> Result<Value> {
     Ok(body)
 }
 
-pub fn fetch_to_file(input: &str, output_dir: &Path) -> Result<PathBuf> {
+fn answer_author(item: &Value) -> String {
+    item.pointer("/author/name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("知乎用户")
+        .trim()
+        .to_string()
+}
+
+fn answer_content(item: &Value) -> Result<String> {
+    let html = item
+        .get("content")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("content_html").and_then(Value::as_str))
+        .filter(|s| !s.trim().is_empty())
+        .context("知乎接口没有返回回答正文")?;
+    html_to_text(html)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZhihuExport {
+    pub path: PathBuf,
+    pub total: usize,
+    pub first: usize,
+    pub last: usize,
+}
+
+impl ZhihuExport {
+    // Lets the GUI keep using `path.display()` while showing range info.
+    pub fn display(&self) -> impl std::fmt::Display + '_ {
+        struct ExportDisplay<'a>(&'a ZhihuExport);
+
+        impl std::fmt::Display for ExportDisplay<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                if self.0.total > 1 {
+                    write!(
+                        f,
+                        "{}（共 {} 个回答，导出 {}-{}）",
+                        self.0.path.display(),
+                        self.0.total,
+                        self.0.first,
+                        self.0.last
+                    )
+                } else {
+                    write!(f, "{}", self.0.path.display())
+                }
+            }
+        }
+
+        ExportDisplay(self)
+    }
+}
+
+fn fetch_question_to_file(
+    id: &str,
+    output_dir: &Path,
+    from: Option<usize>,
+    to: Option<usize>,
+) -> Result<ZhihuExport> {
+    let start = from.unwrap_or(1).max(1);
+    let end = to.unwrap_or(usize::MAX);
+    if end < start {
+        bail!("结束回答序号不能小于起始回答序号");
+    }
+
+    let mut endpoint = api_url(&Target::Question(id.to_string()));
+    let mut items: Vec<(usize, Value)> = Vec::new();
+    let mut question_title = String::new();
+    let mut total = 0usize;
+    let mut ordinal = 0usize;
+
+    for _ in 0..500 {
+        let body = fetch_endpoint(&endpoint)?;
+        if question_title.is_empty() {
+            question_title = body
+                .pointer("/data/0/question/title")
+                .and_then(Value::as_str)
+                .unwrap_or("知乎问题")
+                .trim()
+                .to_string();
+            total = body
+                .pointer("/paging/totals")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+        }
+
+        let page = body
+            .get("data")
+            .and_then(Value::as_array)
+            .context("知乎接口没有返回回答列表")?;
+        let mut range_done = false;
+        for item in page {
+            ordinal += 1;
+            if ordinal < start {
+                continue;
+            }
+            if ordinal > end {
+                range_done = true;
+                break;
+            }
+            items.push((ordinal, item.clone()));
+        }
+
+        if range_done
+            || ordinal >= end
+            || body
+                .pointer("/paging/is_end")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        {
+            break;
+        }
+
+        endpoint = body
+            .pointer("/paging/next")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .context("知乎回答分页链接缺失")?
+            .to_string();
+    }
+
+    if items.is_empty() {
+        if total > 0 && start > total {
+            bail!("这个问题共 {total} 个回答，起始序号 {start} 超出范围");
+        }
+        bail!("这个范围内没有可导出的回答");
+    }
+
+    let sections = items
+        .iter()
+        .map(|(ordinal, item)| {
+            let answer_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            let link = format!("https://www.zhihu.com/question/{id}/answer/{answer_id}");
+            Ok(format!(
+                "回答 {ordinal} | {}\n链接：{link}\n\n{}",
+                answer_author(item),
+                answer_content(item)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let first = items[0].0;
+    let last = items.last().map(|(ordinal, _)| *ordinal).unwrap_or(first);
+    let scope = if total > 0 {
+        format!("共 {total} 个回答 | 导出 {first}-{last}")
+    } else {
+        format!("导出 {first}-{last}")
+    };
+    let content = format!(
+        "{}\n\n{}\n\n{}\n\n---\n\n{}",
+        question_title,
+        scope,
+        sections.join("\n\n---\n\n"),
+        ""
+    );
+
+    std::fs::create_dir_all(output_dir)?;
+    let path = output_dir.join(format!("{}.txt", sanitize_filename(&question_title)));
+    std::fs::write(&path, content)?;
+    Ok(ZhihuExport {
+        path,
+        total,
+        first,
+        last,
+    })
+}
+
+pub fn fetch_to_file_range(
+    input: &str,
+    output_dir: &Path,
+    from: Option<usize>,
+    to: Option<usize>,
+) -> Result<ZhihuExport> {
     let target = parse_target(input)?;
-    let body = fetch_json(&target)?;
+    if let Target::Question(id) = &target {
+        return fetch_question_to_file(id, output_dir, from, to);
+    }
+
+    let body = fetch_endpoint(&api_url(&target))?;
     let title = pick_title(&body, &target);
     let html = body
         .get("content")
@@ -227,7 +410,16 @@ pub fn fetch_to_file(input: &str, output_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(output_dir)?;
     let path = output_dir.join(format!("{}.txt", sanitize_filename(&title)));
     std::fs::write(&path, content)?;
-    Ok(path)
+    Ok(ZhihuExport {
+        path,
+        total: 1,
+        first: 1,
+        last: 1,
+    })
+}
+
+pub fn fetch_to_file(input: &str, output_dir: &Path) -> Result<PathBuf> {
+    Ok(fetch_to_file_range(input, output_dir, None, None)?.path)
 }
 
 #[cfg(test)]
@@ -251,10 +443,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_question_links() {
+        assert_eq!(
+            parse_target("https://www.zhihu.com/question/123").unwrap(),
+            Target::Question("123".into())
+        );
+    }
+
+    #[test]
     fn rejects_non_zhihu_links() {
         assert!(parse_target("https://example.com/question/1/answer/2").is_err());
     }
+
+    #[test]
+    #[ignore = "需要网络，验证问题回答范围导出"]
+    fn fetches_question_range() {
+        let dir = std::path::Path::new("target/tmp/zhihu-test");
+        let export = fetch_to_file_range(
+            "https://www.zhihu.com/question/67287444",
+            dir,
+            Some(1),
+            Some(5),
+        )
+        .unwrap();
+        assert_eq!(export.first, 1);
+        assert_eq!(export.last, 5);
+        let text = std::fs::read_to_string(&export.path).unwrap();
+        assert!(text.contains("导出 1-5"));
+        assert!(text.contains("回答 5 |"));
+        assert!(!text.contains("回答 6 |"));
+    }
 }
+
 #[test]
 #[ignore = "需要网络，验证真实知乎链接"]
 fn fetches_real_answer_and_article() {
