@@ -95,6 +95,7 @@ class _HomeState extends State<HomePage> {
   Future<void> _restore() async {
     final preferences = await SharedPreferences.getInstance();
     service.biliCookies = preferences.getString('biliCookies') ?? '';
+    service.zhihuCookies = preferences.getString('zhihuCookies') ?? '';
     final dir = await outputDirectory();
     final files = await dir
         .list()
@@ -140,6 +141,7 @@ class _HomeState extends State<HomePage> {
 
   Future<void> fetch() => runTask(() async {
     if (mode == 3) {
+      setState(() => preview = null);
       final value = await service.zhihu(
         link.text,
         allAnswers,
@@ -361,6 +363,34 @@ class _HomeState extends State<HomePage> {
     }
   }
 
+  Future<void> loginZhihu() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(builder: (_) => const LoginPage(zhihu: true)),
+    );
+    if (!mounted) return;
+    final cookies = <String, String>{};
+    for (final host in ['www.zhihu.com', 'zhuanlan.zhihu.com']) {
+      for (final cookie in await CookieManager.instance().getCookies(
+        url: WebUri('https://$host/'),
+      )) {
+        cookies[cookie.name] = '${cookie.value}';
+      }
+    }
+    service.zhihuCookies = cookies.entries
+        .map((e) => '${e.key}=${e.value}')
+        .join('; ');
+    await (await SharedPreferences.getInstance()).setString(
+      'zhihuCookies',
+      service.zhihuCookies,
+    );
+    if (!mounted) return;
+    setState(() {
+      preview = null;
+      status = service.zhihuLoggedIn ? '知乎已登录，请重新获取正文' : '知乎登录尚未完成，请登录后点「完成」';
+    });
+  }
+
   Future<void> share(File file) async {
     if (!await file.exists()) {
       if (mounted) setState(() => status = '文件已被移动或删除');
@@ -447,6 +477,11 @@ class _HomeState extends State<HomePage> {
           ],
         ),
         actions: [
+          if (mode == 3)
+            TextButton(
+              onPressed: busy ? null : loginZhihu,
+              child: Text(service.zhihuLoggedIn ? '知乎已登录' : '知乎登录'),
+            ),
           if (mode < 2)
             TextButton(
               onPressed: busy ? null : login,
@@ -841,11 +876,12 @@ String qualityName(int quality) =>
     '画质 $quality';
 
 class LoginPage extends StatelessWidget {
-  const LoginPage({super.key});
+  const LoginPage({super.key, this.zhihu = false});
+  final bool zhihu;
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('B站登录'),
+      title: Text(zhihu ? '知乎登录' : 'B站登录'),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
@@ -855,7 +891,11 @@ class LoginPage extends StatelessWidget {
     ),
     body: InAppWebView(
       initialUrlRequest: URLRequest(
-        url: WebUri('https://passport.bilibili.com/login'),
+        url: WebUri(
+          zhihu
+              ? 'https://www.zhihu.com/signin'
+              : 'https://passport.bilibili.com/login',
+        ),
       ),
       initialSettings: InAppWebViewSettings(
         javaScriptEnabled: true,
@@ -896,7 +936,7 @@ class _FilesState extends State<FilesPage> {
           onPressed: () => showAboutDialog(
             context: context,
             applicationName: '拾文',
-            applicationVersion: '1.0.0',
+            applicationVersion: '1.0.1',
             applicationIcon: Image.asset(
               'assets/logo.png',
               width: 48,

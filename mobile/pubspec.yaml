@@ -1,7 +1,7 @@
 name: shiwen_mobile
 description: 拾文：手机独立提取字幕、知乎文字与音视频转写
 publish_to: none
-version: 1.0.0+1
+version: 1.0.1+2
 environment:
   sdk: '>=3.10.0 <4.0.0'
 dependencies:

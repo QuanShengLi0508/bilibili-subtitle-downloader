@@ -23,9 +23,9 @@ try {
 } finally { Pop-Location }
 $dist = Join-Path $mobile 'dist'
 New-Item -ItemType Directory -Force $dist | Out-Null
-$apk = Join-Path $dist 'Shiwen-1.0.0-android-arm64.apk'
+$apk = Join-Path $dist 'Shiwen-1.0.1-android-arm64.apk'
 Copy-Item (Join-Path $stage 'build\app\outputs\flutter-apk\app-release.apk') $apk -Force
 $hash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
-Set-Content "$apk.sha256" "$hash  Shiwen-1.0.0-android-arm64.apk" -Encoding ascii
+Set-Content "$apk.sha256" "$hash  Shiwen-1.0.1-android-arm64.apk" -Encoding ascii
 Write-Host "安卓安装包：$apk"
 

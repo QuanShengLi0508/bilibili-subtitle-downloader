@@ -100,6 +100,8 @@ bili-subtitle-cli.exe --video BV1xxxxxxxx 80
 
 ## 安卓手机版
 
+[Android 1.0.1 修复版下载](https://github.com/QuanShengLi0508/bilibili-subtitle-downloader/releases/tag/shiwen-android-v1.0.1)：修复知乎节选被当成全文导出的问题，增加知乎登录入口。遇到需要登录的文章，请在手机内登录后重新获取。
+
 安卓源码位于 `mobile/`，手机独立运行，支持 B站字幕与视频、知乎文字及本地音视频转写，内置识别模型。文字支持 TXT、MD、DOCX、PDF，保存后可直接打开或通过系统菜单分享给微信、QQ等应用。
 
 Windows 开发环境可运行 `build-android.ps1` 生成正式签名的 ARM64 APK。签名配置和详细构建说明见 [手机版说明](mobile/README.md)。发布密钥与密码文件不进入版本控制。

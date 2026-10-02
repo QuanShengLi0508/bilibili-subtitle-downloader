@@ -23,10 +23,12 @@ void main() {
         final file = await exportPreview(preview, 1, 1, format);
         final bytes = await file.readAsBytes();
         expect(bytes.length, greaterThan(20));
-        if (format == ExportFormat.pdf)
+        if (format == ExportFormat.pdf) {
           expect(ascii.decode(bytes.take(4).toList()), '%PDF');
-        if (format == ExportFormat.txt)
+        }
+        if (format == ExportFormat.txt) {
           expect(utf8.decode(bytes), contains('这是中文长段落。'));
+        }
       }
     } finally {
       temp.deleteSync(recursive: true);

@@ -43,6 +43,7 @@ void main() {
       await tester.tap(find.text(name));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
+      if (name == '知乎') expect(find.text('知乎登录'), findsOneWidget);
     }
     expect(find.text('获取内容'), findsOneWidget);
     final dynamic home = tester.state(find.byType(HomePage));

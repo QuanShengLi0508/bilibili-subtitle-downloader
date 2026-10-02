@@ -13,6 +13,13 @@ import 'zhihu_sign.dart';
 const userAgent =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0';
 
+class ZhihuIncompleteContentException implements Exception {
+  const ZhihuIncompleteContentException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 class ContentService {
   ContentService({Dio? client})
     : dio =
@@ -25,6 +32,8 @@ class ContentService {
           );
   final Dio dio;
   String biliCookies = '';
+  String zhihuCookies = '';
+  bool get zhihuLoggedIn => RegExp(r'(?:^|;\s*)z_c0=').hasMatch(zhihuCookies);
   final CancelToken cancelToken = CancelToken();
   void cancel() => cancelToken.cancel('已取消');
   Future<Map<String, dynamic>> json(
@@ -68,11 +77,18 @@ class ContentService {
       r'/(?:p|article)/(\d+)',
     ).firstMatch(uri.path)?.group(1);
     Future<Map<String, dynamic>> get(String url) async {
-      const fingerprint = 'ZhihuAnonymousFingerprint00000000000000';
+      final savedFingerprint = RegExp(
+        r'(?:^|;\s*)d_c0=([^;]+)',
+      ).firstMatch(zhihuCookies)?.group(1);
+      final fingerprint =
+          savedFingerprint ?? 'ZhihuAnonymousFingerprint00000000000000';
+      final cookies = zhihuCookies.isEmpty
+          ? 'd_c0=$fingerprint'
+          : '$zhihuCookies${savedFingerprint == null ? '; d_c0=$fingerprint' : ''}';
       return json(
         url,
         headers: {
-          'Cookie': 'd_c0=$fingerprint',
+          'Cookie': cookies,
           'Referer': 'https://zhuanlan.zhihu.com/',
           'Origin': 'https://zhuanlan.zhihu.com',
           'Accept': '*/*',
@@ -86,6 +102,7 @@ class ContentService {
       final body = await get(
         'https://zhuanlan.zhihu.com/api/articles/$articleId',
       );
+      requireCompleteZhihuContent(body);
       return TextPreview('${body['title'] ?? '知乎专栏'}', [
         TextEntry(
           '',
@@ -98,6 +115,7 @@ class ContentService {
         'https://api.zhihu.com/v4/answers/$answerId?include=content,author,question',
       );
       if (!allAnswers) {
+        requireCompleteZhihuContent(body);
         return TextPreview('${body['question']?['title'] ?? '知乎回答'}', [
           TextEntry(
             '${body['author']?['name'] ?? '知乎用户'}',
@@ -127,6 +145,7 @@ class ContentService {
         final id = '${item['id'] ?? ''}';
         if (id.isEmpty) throw StateError('回答缺少编号');
         if (!ids.add(id)) continue;
+        requireCompleteZhihuContent(Map<String, dynamic>.from(item as Map));
         title = '${item['question']?['title'] ?? title}';
         entries.add(
           TextEntry(
@@ -153,6 +172,24 @@ class ContentService {
     return TextPreview(title, entries, isQuestion: true);
   }
 
+  void requireCompleteZhihuContent(Map<String, dynamic> body) {
+    const fields = [
+      'content_need_truncated',
+      'is_truncated',
+      'is_content_truncated',
+      'content_is_truncated',
+    ];
+    if (fields.any(
+      (key) => body[key] == true || body[key] == 1 || body[key] == 'true',
+    )) {
+      throw ZhihuIncompleteContentException(
+        zhihuLoggedIn
+            ? '知乎仍只返回节选，未获取全文。请重新登录知乎，并确认账号可阅读全文后再获取；本次不会导出。'
+            : '知乎只返回了节选。请点右上角「知乎登录」，登录完成后重新获取；未获取全文，本次不会导出。',
+      );
+    }
+  }
+
   Future<BiliVideo> bili(String input) async {
     var text = input.trim();
     if (text.contains('b23.tv')) {
@@ -165,7 +202,10 @@ class ContentService {
       final response = await dio.get<String>(
         url,
         options: Options(
-          headers: {'User-Agent': userAgent, 'Referer': 'https://www.bilibili.com/'},
+          headers: {
+            'User-Agent': userAgent,
+            'Referer': 'https://www.bilibili.com/',
+          },
           responseType: ResponseType.plain,
         ),
         cancelToken: cancelToken,
