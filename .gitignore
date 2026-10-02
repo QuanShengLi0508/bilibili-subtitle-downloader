@@ -19,3 +19,5 @@ Thumbs.db
 
 # Third-party binaries
 /tools/
+
+/runtime/

@@ -5,6 +5,7 @@ mod bili;
 mod cli;
 
 fn main() {
+    bili::configure_tools_path();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!("用法: bili-subtitle-cli.exe [--srt|--streams|--video] <链接> [清晰度ID]");

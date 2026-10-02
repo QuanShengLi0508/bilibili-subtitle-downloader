@@ -723,3 +723,21 @@ pub fn sanitize_filename(s: &str) -> String {
         name
     }
 }
+
+/// Add bundled media tools before launching any background workers.
+pub fn configure_tools_path() {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(directory) = exe.parent() {
+            let tools = directory.join("tools");
+            if tools.is_dir() {
+                let mut paths = vec![tools];
+                if let Some(existing) = std::env::var_os("PATH") {
+                    paths.extend(std::env::split_paths(&existing));
+                }
+                if let Ok(value) = std::env::join_paths(paths) {
+                    std::env::set_var("PATH", value);
+                }
+            }
+        }
+    }
+}

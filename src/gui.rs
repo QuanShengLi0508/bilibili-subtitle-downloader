@@ -2,6 +2,7 @@ use crate::bili::{
     lines_to_srt, lines_to_txt, sanitize_filename, Client, QrPoll, SubTrack, VideoInfo, VideoStream,
 };
 use crate::cli::output_dir;
+use crate::export::{self, TextFormat};
 use crate::external;
 use crate::transcribe;
 use crate::zhihu;
@@ -12,6 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
+
+const LOGO_PNG: &[u8] = include_bytes!("../assets/subtitle-extractor-logo.png");
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -39,6 +42,7 @@ enum Msg {
     ExternalSaved(Result<PathBuf>),
     TranscribeSaved(Result<Vec<PathBuf>>),
     ZhihuSaved(Result<zhihu::ZhihuExport>),
+    ZhihuLoaded(Result<zhihu::ZhihuContent>),
     QrReady {
         w: usize,
         pixels: Vec<egui::Color32>,
@@ -48,6 +52,7 @@ enum Msg {
 }
 
 struct App {
+    logo: egui::TextureHandle,
     ffmpeg_ok: bool,
     mode: Mode,
     link: String,
@@ -62,10 +67,14 @@ struct App {
     video_progress: Option<f64>,
     external: Option<external::ExternalVideo>,
     media_file: Option<PathBuf>,
-    whisper_model: Option<PathBuf>,
+    text_format: TextFormat,
+    saved_files: Vec<PathBuf>,
+    reveal_result: bool,
     transcribe_language: String,
     zhihu_from: String,
     zhihu_to: String,
+    zhihu_all_answers: bool,
+    zhihu_content: Option<Arc<zhihu::ZhihuContent>>,
     output_dir: PathBuf,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -76,9 +85,19 @@ struct App {
 }
 
 impl App {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
+        let icon = eframe::icon_data::from_png_bytes(LOGO_PNG).expect("Invalid application logo");
+        let logo = ctx.load_texture(
+            "app-logo",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width as usize, icon.height as usize],
+                &icon.rgba,
+            ),
+            egui::TextureOptions::LINEAR,
+        );
         Self {
+            logo,
             mode: Mode::Subtitle,
             ffmpeg_ok: Client::ffmpeg_available(),
             link: String::new(),
@@ -93,10 +112,14 @@ impl App {
             video_progress: None,
             external: None,
             media_file: None,
-            whisper_model: None,
+            text_format: TextFormat::Txt,
+            saved_files: recent_saved_file(&output_dir()).into_iter().collect(),
+            reveal_result: false,
             transcribe_language: "auto".into(),
             zhihu_from: String::new(),
             zhihu_to: String::new(),
+            zhihu_all_answers: true,
+            zhihu_content: None,
             output_dir: output_dir(),
             tx,
             rx,
@@ -215,6 +238,7 @@ impl App {
         let title = video.title.clone();
         let page = self.selected_page;
         let fmt = fmt.to_string();
+        let text_format = self.text_format;
         let dir = self.output_dir.clone();
         let tx = self.tx.clone();
 
@@ -238,6 +262,11 @@ impl App {
                 std::fs::create_dir_all(&dir)?;
                 let path = dir.join(&name);
                 std::fs::write(&path, content)?;
+                let path = if fmt == "txt" {
+                    export::convert(&path, text_format)?
+                } else {
+                    path
+                };
                 Ok(path.display().to_string())
             })();
             let _ = tx.send(Msg::Saved(res));
@@ -312,12 +341,8 @@ impl App {
             self.status = "请先选择音频或视频文件".into();
             return;
         };
-        let Some(model) = self
-            .whisper_model
-            .clone()
-            .or_else(|| transcribe::find_default_model())
-        else {
-            self.status = "未找到 Whisper 模型，请先选择模型文件".into();
+        let Some(model) = transcribe::find_default_model() else {
+            self.status = "内置识别资源缺失，请重新安装拾文".into();
             return;
         };
         let language = self.transcribe_language.clone();
@@ -326,8 +351,20 @@ impl App {
 
         self.busy = true;
         self.status = "正在转换音频并识别文字...".into();
+        let text_format = self.text_format;
         thread::spawn(move || {
-            let res = transcribe::run(&media, &model, &language, &dir);
+            let res = transcribe::run(&media, &model, &language, &dir).and_then(|paths| {
+                paths
+                    .into_iter()
+                    .map(|path| {
+                        if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
+                            export::convert(&path, text_format)
+                        } else {
+                            Ok(path)
+                        }
+                    })
+                    .collect()
+            });
             let _ = tx.send(Msg::TranscribeSaved(res));
         });
     }
@@ -338,48 +375,57 @@ impl App {
             self.status = "请先粘贴知乎回答或专栏链接".into();
             return;
         }
-        let dir = self.output_dir.clone();
+        self.zhihu_content = None;
+        self.zhihu_from.clear();
+        self.zhihu_to.clear();
         let tx = self.tx.clone();
+        let all_answers = self.zhihu_all_answers;
         self.busy = true;
-        self.status = "正在直接获取知乎正文...".into();
-        let parse_bound = |text: &str, label: &str| -> std::result::Result<Option<usize>, String> {
-            let text = text.trim();
-            if text.is_empty() {
+        self.status = "正在获取知乎内容与回答列表…".into();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::ZhihuLoaded(zhihu::fetch_content(&input, all_answers)));
+        });
+    }
+
+    fn spawn_export_zhihu(&mut self) {
+        let Some(content) = self.zhihu_content.clone() else {
+            return;
+        };
+        let parse = |text: &str| -> Result<Option<usize>> {
+            if text.trim().is_empty() {
                 Ok(None)
             } else {
-                match text.parse::<usize>() {
-                    Ok(v) if v >= 1 => Ok(Some(v)),
-                    _ => Err(format!("{label}必须是大于0的数字")),
-                }
+                Ok(Some(
+                    text.trim()
+                        .parse::<usize>()
+                        .map_err(|_| anyhow::anyhow!("回答序号必须为正整数"))?,
+                ))
             }
         };
-        let from = match parse_bound(&self.zhihu_from, "起始回答序号") {
-            Ok(v) => v,
-            Err(e) => {
-                self.busy = false;
-                self.status = e;
+        let bounds = parse(&self.zhihu_from).and_then(|from| Ok((from, parse(&self.zhihu_to)?)));
+        let (from, to) = match bounds {
+            Ok(bounds) => bounds,
+            Err(error) => {
+                self.status = error.to_string();
                 return;
             }
         };
-        let to = match parse_bound(&self.zhihu_to, "结束回答序号") {
-            Ok(v) => v,
-            Err(e) => {
-                self.busy = false;
-                self.status = e;
-                return;
-            }
-        };
-        if let (Some(f), Some(t)) = (from, to) {
-            if t < f {
-                self.busy = false;
-                self.status = "结束回答序号不能小于起始回答序号".into();
-                return;
-            }
+        let first = from.unwrap_or(1);
+        let last = to.unwrap_or(content.count());
+        if first == 0 || last == 0 || first > last || last > content.count() {
+            self.status = format!(
+                "导出范围必须在 1-{} 之间，且起始序号不能大于结束序号",
+                content.count()
+            );
+            return;
         }
+        let dir = self.output_dir.clone();
+        let format = self.text_format;
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "正在导出已获取的内容…".into();
         thread::spawn(move || {
-            let _ = tx.send(Msg::ZhihuSaved(zhihu::fetch_to_file_range(
-                &input, &dir, from, to,
-            )));
+            let _ = tx.send(Msg::ZhihuSaved(content.export(&dir, from, to, format)));
         });
     }
 
@@ -456,6 +502,7 @@ impl App {
 
     fn poll_messages(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
+            let previous_status = self.status.clone();
             if self.qr_cancelled.load(Ordering::Relaxed)
                 && matches!(
                     &msg,
@@ -480,6 +527,7 @@ impl App {
                 }
                 Msg::ExternalSaved(res) => match res {
                     Ok(path) => {
+                        self.saved_files = vec![path.clone()];
                         self.video_progress = None;
                         self.status = format!("已保存: {}", path.display());
                     }
@@ -540,8 +588,26 @@ impl App {
                 }
                 Msg::VideoStage(s) => self.status = s,
                 Msg::VideoProgress(p) => self.video_progress = Some(p.clamp(0.0, 1.0)),
+                Msg::ZhihuLoaded(result) => match result {
+                    Ok(content) => {
+                        self.zhihu_from = "1".into();
+                        self.zhihu_to = content.count().to_string();
+                        self.status = format!(
+                            "已获取 {} 条{}，请选择范围后确认导出",
+                            content.count(),
+                            if content.is_question {
+                                "回答"
+                            } else {
+                                "内容"
+                            }
+                        );
+                        self.zhihu_content = Some(Arc::new(content));
+                    }
+                    Err(error) => self.status = format!("获取文字失败: {error:#}"),
+                },
                 Msg::ZhihuSaved(res) => match res {
                     Ok(path) => {
+                        self.saved_files = vec![path.path.clone()];
                         self.busy = false;
                         self.status = format!("已保存: {}", path.display());
                     }
@@ -552,6 +618,7 @@ impl App {
                 },
                 Msg::TranscribeSaved(res) => match res {
                     Ok(paths) => {
+                        self.saved_files = paths.clone();
                         let texts: Vec<String> =
                             paths.iter().map(|p| p.display().to_string()).collect();
                         self.status = format!("已保存: {}", texts.join(" 和 "));
@@ -560,6 +627,7 @@ impl App {
                 },
                 Msg::VideoSaved(res) => match res {
                     Ok(path) => {
+                        self.saved_files = vec![PathBuf::from(&path)];
                         self.video_progress = None;
                         self.status = format!("已保存: {path}");
                     }
@@ -569,7 +637,10 @@ impl App {
                     }
                 },
                 Msg::Saved(res) => match res {
-                    Ok(path) => self.status = format!("已保存: {path}"),
+                    Ok(path) => {
+                        self.saved_files = vec![PathBuf::from(&path)];
+                        self.status = format!("已保存: {path}");
+                    }
                     Err(e) => self.status = format!("保存失败: {e:#}"),
                 },
                 Msg::Failed(e) => {
@@ -601,6 +672,11 @@ impl App {
                     }
                 }
             }
+            if self.status != previous_status
+                && (self.status.starts_with("已保存:") || self.status.contains("失败"))
+            {
+                self.reveal_result = true;
+            }
         }
     }
 }
@@ -622,609 +698,47 @@ fn load_media_options(
     (tracks, streams, errors)
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_messages(ctx);
-        if self.busy {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        }
+mod layout;
+mod reference;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(16.0);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(40, 106, 232);
 
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new("B站字幕/视频下载器")
-                            .size(22.0)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("Bilibili Subtitle & Video Downloader")
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(150)),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.logged_in {
-                        if ui.small_button("退出登录").clicked() {
-                            Client::clear_saved_cookies();
-                            self.logged_in = false;
-                            self.status = "已退出登录（AI字幕需要登录才能获取）".into();
-                        }
-                        egui::Frame::default()
-                            .fill(egui::Color32::from_rgb(0xE6, 0xF4, 0xEA))
-                            .rounding(10.0)
-                            .inner_margin(egui::Margin::symmetric(10.0, 4.0))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new("已登录")
-                                        .size(12.0)
-                                        .color(egui::Color32::from_rgb(0x2E, 0xA0, 0x4E)),
-                                );
-                            });
-                    } else if secondary_button(ui, "扫码登录", !self.busy) {
-                        self.spawn_qr_login();
-                    }
-                });
-            });
-
-            ui.add_space(12.0);
-
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("模式")
-                        .size(13.0)
-                        .color(egui::Color32::from_gray(120)),
-                );
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::SelectableLabel::new(self.mode == Mode::Subtitle, "下载字幕"),
-                    )
-                    .clicked()
-                {
-                    self.mode = Mode::Subtitle;
-                }
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::SelectableLabel::new(self.mode == Mode::Video, "下载视频"),
-                    )
-                    .clicked()
-                {
-                    self.mode = Mode::Video;
-                }
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::SelectableLabel::new(
-                            self.mode == Mode::Transcribe,
-                            "音频/视频转文字",
-                        ),
-                    )
-                    .clicked()
-                {
-                    self.mode = Mode::Transcribe;
-                }
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::SelectableLabel::new(self.mode == Mode::WebText, "知乎文本"),
-                    )
-                    .clicked()
-                {
-                    self.mode = Mode::WebText;
-                }
-            });
-            ui.add_space(6.0);
-
-            if self.mode == Mode::WebText {
-                egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
-                    .rounding(10.0)
-                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let enabled = !self.busy;
-                            let edited = ui.add_enabled(
-                                enabled,
-                                egui::TextEdit::singleline(&mut self.link)
-                                    .hint_text("知乎回答 / 知乎专栏链接")
-                                    .desired_width(ui.available_width() - 96.0),
-                            );
-                            if edited.changed() {
-                                self.video = None;
-                                self.external = None;
-                            }
-                            let enter = edited.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if primary_button(ui, "直接获取文字", enabled) || (enabled && enter)
-                            {
-                                self.spawn_fetch_zhihu();
-                            }
-                        });
-                    });
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("回答范围")
-                            .size(13.0)
-                            .color(egui::Color32::from_gray(120)),
-                    );
-                    ui.add_enabled(
-                        !self.busy,
-                        egui::TextEdit::singleline(&mut self.zhihu_from)
-                            .hint_text("起始，如 1")
-                            .desired_width(90.0),
-                    );
-                    ui.label(
-                        egui::RichText::new("到")
-                            .size(13.0)
-                            .color(egui::Color32::from_gray(120)),
-                    );
-                    ui.add_enabled(
-                        !self.busy,
-                        egui::TextEdit::singleline(&mut self.zhihu_to)
-                            .hint_text("结束，如 200")
-                            .desired_width(90.0),
-                    );
-                    ui.label(
-                        egui::RichText::new("留空导出全部，仅对问题链接生效")
-                            .size(12.0)
-                            .color(egui::Color32::from_gray(150)),
-                    );
-                });
-            } else if self.mode != Mode::Transcribe {
-                egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
-                    .rounding(10.0)
-                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let enabled = !self.busy;
-                            let edited = ui.add_enabled(
-                                enabled,
-                                egui::TextEdit::singleline(&mut self.link)
-                                    .hint_text("B站 / 抖音 / 小红书视频链接")
-                                    .desired_width(ui.available_width() - 96.0),
-                            );
-                            if edited.changed() {
-                                self.video = None;
-                                self.external = None;
-                                self.tracks.clear();
-                                self.streams.clear();
-                            }
-                            let fetch_label = if self.mode == Mode::Video {
-                                "获取视频"
-                            } else {
-                                "获取字幕"
-                            };
-                            let enter = edited.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if primary_button(ui, fetch_label, enabled) || (enabled && enter) {
-                                self.spawn_fetch_video();
-                            }
-                        });
-                    });
-            } else {
-                egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
-                    .rounding(10.0)
-                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if secondary_button(ui, "选择音频/视频", !self.busy) {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter(
-                                        "音频/视频",
-                                        &[
-                                            "mp4", "mkv", "flv", "mov", "avi", "webm", "mp3",
-                                            "wav", "m4a", "aac", "flac", "ogg",
-                                        ],
-                                    )
-                                    .pick_file()
-                                {
-                                    self.media_file = Some(path);
-                                }
-                            }
-                            ui.label(
-                                egui::RichText::new(
-                                    self.media_file
-                                        .as_ref()
-                                        .map(|p| p.display().to_string())
-                                        .unwrap_or_else(|| "尚未选择文件".into()),
-                                )
-                                .size(12.0)
-                                .color(egui::Color32::from_gray(90)),
-                            );
-                        });
-
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("语言")
-                                    .size(13.0)
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                            egui::ComboBox::from_id_salt("transcribe_language")
-                                .selected_text(match self.transcribe_language.as_str() {
-                                    "zh" => "中文",
-                                    "en" => "English",
-                                    _ => "自动识别",
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.transcribe_language,
-                                        "auto".into(),
-                                        "自动识别",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.transcribe_language,
-                                        "zh".into(),
-                                        "中文",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.transcribe_language,
-                                        "en".into(),
-                                        "English",
-                                    );
-                                });
-
-                            if secondary_button(ui, "选择模型", !self.busy) {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Whisper 模型", &["bin", "ggml", "model"])
-                                    .pick_file()
-                                {
-                                    self.whisper_model = Some(path);
-                                }
-                            }
-                            let model = self
-                                .whisper_model
-                                .clone()
-                                .or_else(|| transcribe::find_default_model());
-                            ui.label(
-                                egui::RichText::new(
-                                    model
-                                        .map(|p| p.display().to_string())
-                                        .unwrap_or_else(|| "未找到模型".into()),
-                                )
-                                .size(12.0)
-                                .color(egui::Color32::from_gray(90)),
-                            );
-                        });
-
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if primary_button(
-                                ui,
-                                "开始识别",
-                                !self.busy && self.media_file.is_some() && self.ffmpeg_ok,
-                            ) {
-                                self.spawn_transcribe();
-                            }
-                            ui.label(
-                                egui::RichText::new("识别完成后保存 TXT 和 SRT")
-                                    .size(12.0)
-                                    .color(egui::Color32::from_gray(150)),
-                            );
-                        });
-                    });
-            }
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if self.busy {
-                    ui.spinner();
-                }
-                ui.label(
-                    egui::RichText::new("●")
-                        .size(12.0)
-                        .color(status_color(&self.status)),
-                );
-                ui.label(
-                    egui::RichText::new(&self.status)
-                        .size(13.0)
-                        .color(egui::Color32::from_gray(70)),
-                );
-            });
-
-            if let Some(stage) = self.qr_stage.clone() {
-                ui.add_space(12.0);
-                ui.vertical_centered(|ui| {
-                    if let Some(tex) = &self.qr_texture {
-                        egui::Frame::default()
-                            .fill(egui::Color32::WHITE)
-                            .rounding(12.0)
-                            .inner_margin(egui::Margin::same(16.0))
-                            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
-                            .show(ui, |ui| {
-                                ui.add(
-                                    egui::Image::new(tex)
-                                        .fit_to_exact_size(egui::vec2(240.0, 240.0)),
-                                );
-                            });
-                    }
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(stage)
-                            .size(13.0)
-                            .color(egui::Color32::from_gray(90)),
-                    );
-                    if ui.small_button("取消登录").clicked() {
-                        self.qr_cancelled.store(true, Ordering::Relaxed);
-                        self.qr_stage = None;
-                        self.qr_texture = None;
-                        self.busy = false;
-                        self.status = "已取消扫码登录".into();
-                    }
-                });
-            }
-
-            let video_info = if matches!(self.mode, Mode::Transcribe | Mode::WebText) {
-                None
-            } else {
-                self.video.as_ref().map(|v| {
-                    (
-                        v.title.clone(),
-                        format!("{} (aid {})", v.bvid, v.aid),
-                        v.pages.clone(),
-                    )
-                })
-            };
-            if let Some(external_video) = self.external.clone().filter(|_| self.mode == Mode::Video)
-            {
-                ui.add_space(10.0);
-                egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
-                    .rounding(10.0)
-                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(external_video.title)
-                                .size(15.0)
-                                .strong(),
-                        );
-                        ui.label(
-                            egui::RichText::new("抖音 / 小红书")
-                                .size(12.0)
-                                .color(egui::Color32::from_gray(150)),
-                        );
-
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if primary_button(ui, "下载视频", !self.busy) {
-                                self.spawn_download_external();
-                            }
-                            ui.label(
-                                egui::RichText::new("自动选择最佳画质并输出 MP4")
-                                    .size(12.0)
-                                    .color(egui::Color32::from_gray(150)),
-                            );
-                        });
-
-                        if self.busy {
-                            if let Some(progress) = self.video_progress {
-                                ui.add_space(6.0);
-                                ui.add(
-                                    egui::ProgressBar::new(progress as f32)
-                                        .desired_width(ui.available_width())
-                                        .show_percentage(),
-                                );
-                            }
-                        }
-                    });
-            } else if let Some((title, id_text, pages)) = &video_info {
-                ui.add_space(10.0);
-                egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
-                    .rounding(10.0)
-                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(228)))
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new(title).size(15.0).strong());
-                        ui.label(
-                            egui::RichText::new(id_text)
-                                .size(12.0)
-                                .color(egui::Color32::from_gray(150)),
-                        );
-
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("分P")
-                                    .size(13.0)
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                            let current = pages
-                                .iter()
-                                .find(|p| p.page == self.selected_page)
-                                .map(|p| (p.page, p.part.clone()))
-                                .unwrap_or((1, String::new()));
-                            let prev_page = self.selected_page;
-                            ui.add_enabled_ui(!self.busy && pages.len() > 1, |ui| {
-                                egui::ComboBox::from_id_salt("page_select")
-                                    .selected_text(format!("P{} {}", current.0, current.1))
-                                    .show_ui(ui, |ui| {
-                                        for p in pages {
-                                            let label = format!("P{} {}", p.page, p.part);
-                                            ui.selectable_value(
-                                                &mut self.selected_page,
-                                                p.page,
-                                                label,
-                                            );
-                                        }
-                                    });
-                            });
-                            if self.selected_page != prev_page {
-                                self.spawn_fetch_tracks(self.selected_page);
-                            }
-                        });
-
-                        ui.add_space(6.0);
-                        if self.mode == Mode::Video {
-                            let labels: Vec<String> = self
-                                .streams
-                                .iter()
-                                .map(|s| {
-                                    if s.quality_id == 0 {
-                                        s.label.clone()
-                                    } else {
-                                        format!("{} [{}]", s.label, s.quality_id)
-                                    }
-                                })
-                                .collect();
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("画质")
-                                        .size(13.0)
-                                        .color(egui::Color32::from_gray(120)),
-                                );
-                                ui.add_enabled_ui(!self.busy && !self.streams.is_empty(), |ui| {
-                                    egui::ComboBox::from_id_salt("stream_select")
-                                        .selected_text(
-                                            labels
-                                                .get(self.selected_stream)
-                                                .cloned()
-                                                .unwrap_or_else(|| "未获取到画质".into()),
-                                        )
-                                        .show_ui(ui, |ui| {
-                                            for (i, n) in labels.iter().enumerate() {
-                                                ui.selectable_value(
-                                                    &mut self.selected_stream,
-                                                    i,
-                                                    n,
-                                                );
-                                            }
-                                        });
-                                });
-                            });
-
-                            if self.streams.is_empty() && !self.busy {
-                                ui.label(
-                                    egui::RichText::new(
-                                        "没有获取到可用画质，请换一个链接或分P试试",
-                                    )
-                                    .size(12.0)
-                                    .color(egui::Color32::from_rgb(0xE0, 0x4F, 0x5F)),
-                                );
-                            }
-                            if !self.ffmpeg_ok {
-                                ui.label(
-                                    egui::RichText::new(
-                                        "未检测到 ffmpeg，B站音视频需要 ffmpeg 合并",
-                                    )
-                                    .size(12.0)
-                                    .color(egui::Color32::from_rgb(0xC8, 0x74, 0x0F)),
-                                );
-                            }
-
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                if primary_button(
-                                    ui,
-                                    "下载视频",
-                                    !self.busy && !self.streams.is_empty(),
-                                ) {
-                                    self.spawn_download_video();
-                                }
-                                ui.label(
-                                    egui::RichText::new("输出为 MP4；高画质需要登录B站账号")
-                                        .size(12.0)
-                                        .color(egui::Color32::from_gray(150)),
-                                );
-                            });
-
-                            if self.busy {
-                                if let Some(progress) = self.video_progress {
-                                    ui.add_space(6.0);
-                                    ui.add(
-                                        egui::ProgressBar::new(progress as f32)
-                                            .desired_width(ui.available_width())
-                                            .show_percentage(),
-                                    );
-                                }
-                            }
-                        } else if !self.tracks.is_empty() {
-                            let names: Vec<String> = self
-                                .tracks
-                                .iter()
-                                .map(|t| format!("{} [{}]", t.lan_doc, t.lan))
-                                .collect();
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("语言")
-                                        .size(13.0)
-                                        .color(egui::Color32::from_gray(120)),
-                                );
-                                ui.add_enabled_ui(!self.busy, |ui| {
-                                    egui::ComboBox::from_id_salt("track_select")
-                                        .selected_text(
-                                            names
-                                                .get(self.selected_track)
-                                                .cloned()
-                                                .unwrap_or_default(),
-                                        )
-                                        .show_ui(ui, |ui| {
-                                            for (i, n) in names.iter().enumerate() {
-                                                ui.selectable_value(&mut self.selected_track, i, n);
-                                            }
-                                        });
-                                });
-                            });
-
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                let enabled = !self.busy;
-                                if primary_button(ui, "下载 TXT", enabled) {
-                                    self.spawn_download("txt");
-                                }
-                                if secondary_button(ui, "下载 SRT", enabled) {
-                                    self.spawn_download("srt");
-                                }
-                            });
-                        } else if !self.busy {
-                            ui.label(
-                                egui::RichText::new("没有找到可下载字幕；可以切换到「下载视频」")
-                                    .size(12.0)
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                        }
-                    });
-            }
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.horizontal(|ui| {
-                    if ui.small_button("更改").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            self.output_dir = dir;
-                        }
-                    }
-                    if ui.small_button("打开").clicked() {
-                        let dir = self.output_dir.clone();
-                        std::fs::create_dir_all(&dir).ok();
-                        let _ = std::process::Command::new("explorer")
-                            .arg(dir.as_os_str())
-                            .spawn();
-                    }
-                    ui.label(
-                        egui::RichText::new(format!("输出目录: {}", self.output_dir.display()))
-                            .size(12.0)
-                            .color(egui::Color32::from_gray(150)),
-                    );
-                });
-            });
-        });
-    }
+fn recent_saved_file(dir: &std::path::Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .filter(|entry| {
+            matches!(
+                entry.path().extension().and_then(|ext| ext.to_str()),
+                Some("txt" | "srt" | "md" | "docx" | "pdf" | "mp4")
+            )
+        })
+        .max_by_key(|entry| {
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        })
+        .map(|entry| entry.path())
 }
 
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0xFB, 0x72, 0x99);
-const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(0xE2, 0x5B, 0x83);
+fn open_saved_file(path: &std::path::Path, select: bool) -> Result<()> {
+    if !path.is_file() {
+        anyhow::bail!("文件已被移动或删除");
+    }
+    let mut command = std::process::Command::new("explorer.exe");
+    if select {
+        let mut argument = std::ffi::OsString::from("/select,");
+        argument.push(path);
+        command.arg(argument);
+    } else {
+        command.arg(path);
+    }
+    command.spawn()?;
+    Ok(())
+}
+const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(31, 84, 185);
 
 fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     ui.add_enabled(
@@ -1235,6 +749,8 @@ fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
                 .strong(),
         )
         .fill(ACCENT)
+        .stroke(egui::Stroke::NONE)
+        .min_size(egui::vec2(116.0, 38.0))
         .rounding(8.0),
     )
     .clicked()
@@ -1243,8 +759,10 @@ fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
 fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     ui.add_enabled(
         enabled,
-        egui::Button::new(egui::RichText::new(label).color(ACCENT_DARK))
-            .fill(ACCENT.gamma_multiply(0.12))
+        egui::Button::new(egui::RichText::new(label).size(12.0).color(ACCENT_DARK))
+            .fill(egui::Color32::from_rgb(239, 245, 255))
+            .stroke(egui::Stroke::NONE)
+            .min_size(egui::vec2(72.0, 32.0))
             .rounding(8.0),
     )
     .clicked()
@@ -1266,37 +784,63 @@ fn status_color(status: &str) -> egui::Color32 {
     }
 }
 
-fn apply_style(cc: &eframe::CreationContext<'_>) {
-    let mut style = (*cc.egui_ctx.style()).clone();
+fn apply_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::light();
-    style.visuals.panel_fill = egui::Color32::from_rgb(0xF6, 0xF7, 0xF9);
-    style.visuals.window_fill = egui::Color32::from_rgb(0xF6, 0xF7, 0xF9);
-    style.visuals.selection.bg_fill = ACCENT;
+    style.visuals.panel_fill = egui::Color32::from_rgb(245, 248, 252);
+    style.visuals.window_fill = egui::Color32::WHITE;
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(31, 45, 65));
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(247, 250, 255);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(209, 228, 255);
     style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT);
     style.visuals.hyperlink_color = ACCENT_DARK;
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(12.0, 6.0);
-    cc.egui_ctx.set_style(style);
+    for (text_style, size) in [
+        (egui::TextStyle::Body, 14.0),
+        (egui::TextStyle::Button, 13.0),
+        (egui::TextStyle::Small, 12.0),
+        (egui::TextStyle::Heading, 24.0),
+    ] {
+        style
+            .text_styles
+            .insert(text_style, egui::FontId::proportional(size));
+    }
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(243, 247, 253);
+    style.visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(216, 226, 239));
+    style.visuals.widgets.inactive.rounding = egui::Rounding::same(7.0);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(229, 240, 255);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
+    style.visuals.widgets.hovered.rounding = egui::Rounding::same(7.0);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(211, 230, 255);
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
+    style.visuals.widgets.active.rounding = egui::Rounding::same(7.0);
+    style.visuals.window_rounding = egui::Rounding::same(14.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 4.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.interact_size.y = 32.0;
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
+    ctx.set_style(style);
 }
 
 pub fn run() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions::default();
     options.viewport = egui::ViewportBuilder::default()
-        .with_inner_size([760.0, 560.0])
-        .with_min_inner_size([620.0, 460.0])
-        .with_title("B站字幕下载器");
+        .with_inner_size([1040.0, 840.0])
+        .with_min_inner_size([780.0, 600.0])
+        .with_icon(eframe::icon_data::from_png_bytes(LOGO_PNG).expect("Invalid application icon"))
+        .with_title("拾文");
     eframe::run_native(
-        "B站字幕下载器",
+        "拾文",
         options,
         Box::new(|cc| {
-            load_chinese_font(cc);
-            apply_style(cc);
-            Ok(Box::new(App::new(cc)))
+            load_chinese_font(&cc.egui_ctx);
+            apply_style(&cc.egui_ctx);
+            Ok(Box::new(App::new(&cc.egui_ctx)))
         }),
     )
 }
 
-fn load_chinese_font(cc: &eframe::CreationContext<'_>) {
+fn load_chinese_font(ctx: &egui::Context) {
     let candidates = [
         r"C:\Windows\Fonts\msyh.ttc",
         r"C:\Windows\Fonts\simhei.ttf",
@@ -1315,7 +859,7 @@ fn load_chinese_font(cc: &eframe::CreationContext<'_>) {
                     .or_default()
                     .insert(0, "cjk".into());
             }
-            cc.egui_ctx.set_fonts(fonts);
+            ctx.set_fonts(fonts);
             return;
         }
     }

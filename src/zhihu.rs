@@ -3,6 +3,7 @@ use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, COOKIE, REFERER, USER_AGENT};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,20 +278,36 @@ fn fetch_question_to_file(
     from: Option<usize>,
     to: Option<usize>,
 ) -> Result<ZhihuExport> {
-    let start = from.unwrap_or(1).max(1);
-    let end = to.unwrap_or(usize::MAX);
-    if end < start {
-        bail!("结束回答序号不能小于起始回答序号");
-    }
+    fetch_question_with(id, output_dir, from, to, fetch_endpoint)
+}
 
+fn fetch_question_with(
+    id: &str,
+    output_dir: &Path,
+    from: Option<usize>,
+    to: Option<usize>,
+    fetch: impl FnMut(&str) -> Result<Value>,
+) -> Result<ZhihuExport> {
+    load_question_with(id, fetch)?.export(output_dir, from, to, crate::export::TextFormat::Txt)
+}
+
+fn load_question_with(
+    id: &str,
+    mut fetch: impl FnMut(&str) -> Result<Value>,
+) -> Result<ZhihuContent> {
     let mut endpoint = api_url(&Target::Question(id.to_string()));
     let mut items: Vec<(usize, Value)> = Vec::new();
     let mut question_title = String::new();
     let mut total = 0usize;
     let mut ordinal = 0usize;
+    let mut visited_pages = HashSet::new();
+    let mut seen_answers = HashSet::new();
 
-    for _ in 0..500 {
-        let body = fetch_endpoint(&endpoint)?;
+    loop {
+        if !visited_pages.insert(endpoint.clone()) {
+            bail!("知乎回答分页重复，未能获取完整列表，请稍后重试");
+        }
+        let body = fetch(&endpoint)?;
         if question_title.is_empty() {
             question_title = body
                 .pointer("/data/0/question/title")
@@ -298,58 +315,63 @@ fn fetch_question_to_file(
                 .unwrap_or("知乎问题")
                 .trim()
                 .to_string();
-            total = body
-                .pointer("/paging/totals")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize;
         }
+        total = total.max(
+            body.pointer("/paging/totals")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+        );
 
         let page = body
             .get("data")
             .and_then(Value::as_array)
             .context("知乎接口没有返回回答列表")?;
-        let mut range_done = false;
+        let previous_ordinal = ordinal;
         for item in page {
-            ordinal += 1;
-            if ordinal < start {
+            let answer_id = value_id(item.get("id").unwrap_or(&Value::Null))
+                .context("知乎回答缺少编号，无法确认完整列表")?;
+            if !seen_answers.insert(answer_id) {
                 continue;
             }
-            if ordinal > end {
-                range_done = true;
-                break;
-            }
+            ordinal += 1;
             items.push((ordinal, item.clone()));
         }
 
-        if range_done
-            || ordinal >= end
-            || body
-                .pointer("/paging/is_end")
-                .and_then(Value::as_bool)
-                .unwrap_or(true)
+        if body
+            .pointer("/paging/is_end")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
         {
             break;
         }
+        if ordinal == previous_ordinal {
+            bail!("知乎未返回新的回答，未能获取完整列表，请稍后重试");
+        }
 
-        endpoint = body
+        let next = body
             .pointer("/paging/next")
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .context("知乎回答分页链接缺失")?
             .to_string();
+        let next_url = reqwest::Url::parse(&endpoint)?.join(&next)?;
+        let host = next_url.host_str().unwrap_or_default();
+        if !matches!(next_url.scheme(), "http" | "https")
+            || !(host == "zhihu.com" || host.ends_with(".zhihu.com"))
+        {
+            bail!("知乎回答分页链接不正确");
+        }
+        endpoint = next_url.to_string();
     }
 
     if items.is_empty() {
-        if total > 0 && start > total {
-            bail!("这个问题共 {total} 个回答，起始序号 {start} 超出范围");
-        }
-        bail!("这个范围内没有可导出的回答");
+        bail!("这个问题没有可获取的回答");
     }
-
+    total = total.max(ordinal);
     let sections = items
         .iter()
         .map(|(ordinal, item)| {
-            let answer_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            let answer_id = value_id(item.get("id").unwrap_or(&Value::Null)).unwrap_or_default();
             let link = format!("https://www.zhihu.com/question/{id}/answer/{answer_id}");
             Ok(format!(
                 "回答 {ordinal} | {}\n链接：{link}\n\n{}",
@@ -359,30 +381,136 @@ fn fetch_question_to_file(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let first = items[0].0;
-    let last = items.last().map(|(ordinal, _)| *ordinal).unwrap_or(first);
-    let scope = if total > 0 {
-        format!("共 {total} 个回答 | 导出 {first}-{last}")
-    } else {
-        format!("导出 {first}-{last}")
-    };
-    let content = format!(
-        "{}\n\n{}\n\n{}\n\n---\n\n{}",
-        question_title,
-        scope,
-        sections.join("\n\n---\n\n"),
-        ""
-    );
-
-    std::fs::create_dir_all(output_dir)?;
-    let path = output_dir.join(format!("{}.txt", sanitize_filename(&question_title)));
-    std::fs::write(&path, content)?;
-    Ok(ZhihuExport {
-        path,
+    Ok(ZhihuContent {
+        title: question_title,
+        sections,
         total,
-        first,
-        last,
+        is_question: true,
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct ZhihuContent {
+    pub title: String,
+    pub sections: Vec<String>,
+    pub total: usize,
+    pub is_question: bool,
+}
+
+impl ZhihuContent {
+    pub fn count(&self) -> usize {
+        self.sections.len()
+    }
+
+    pub fn export(
+        &self,
+        output_dir: &Path,
+        from: Option<usize>,
+        to: Option<usize>,
+        format: crate::export::TextFormat,
+    ) -> Result<ZhihuExport> {
+        let first = from.unwrap_or(1);
+        let last = to.unwrap_or(self.count());
+        if first == 0 || last == 0 || first > last || last > self.count() {
+            bail!(
+                "导出范围必须在 1-{} 之间，且起始序号不能大于结束序号",
+                self.count()
+            );
+        }
+        let selected = self.sections[first - 1..last].join("\n\n---\n\n");
+        let body = if self.is_question {
+            format!(
+                "已获取 {} 个回答 | 导出 {first}-{last}\n\n{selected}",
+                self.count()
+            )
+        } else {
+            selected
+        };
+        let filename = if self.is_question {
+            format!("{}_回答{first}-{last}", sanitize_filename(&self.title))
+        } else {
+            sanitize_filename(&self.title)
+        };
+        let path = output_dir.join(format!("{filename}.{}", format.extension()));
+        crate::export::save(&path, &self.title, &body, format)?;
+        Ok(ZhihuExport {
+            path,
+            total: self.count(),
+            first,
+            last,
+        })
+    }
+}
+
+pub fn fetch_content(input: &str, all_answers: bool) -> Result<ZhihuContent> {
+    let target = parse_target(input)?;
+    let question = match &target {
+        Target::Question(id) => Some(id.clone()),
+        Target::Answer(_) if all_answers => Some(match question_id_from_link(input) {
+            Some(id) => id,
+            None => {
+                let body = fetch_endpoint(&api_url(&target))?;
+                value_id(body.pointer("/question/id").unwrap_or(&Value::Null))
+                    .context("无法识别这个回答所属的问题")?
+            }
+        }),
+        _ => None,
+    };
+    if let Some(id) = question {
+        return load_question_with(&id, fetch_endpoint);
+    }
+    let body = fetch_endpoint(&api_url(&target))?;
+    Ok(ZhihuContent {
+        title: pick_title(&body, &target),
+        sections: vec![answer_content(&body)?],
+        total: 1,
+        is_question: false,
+    })
+}
+
+fn value_id(value: &Value) -> Option<String> {
+    match value {
+        Value::String(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) => {
+            Some(id.clone())
+        }
+        Value::Number(id) if id.is_u64() => Some(id.to_string()),
+        _ => None,
+    }
+}
+
+fn question_id_from_link(input: &str) -> Option<String> {
+    let normalized = if input.contains("://") {
+        input.to_string()
+    } else {
+        format!("https://{input}")
+    };
+    reqwest::Url::parse(&normalized)
+        .ok()
+        .and_then(|url| capture_after(url.path(), "question/"))
+}
+
+pub fn fetch_to_file_scope(
+    input: &str,
+    output_dir: &Path,
+    from: Option<usize>,
+    to: Option<usize>,
+    all_answers: bool,
+) -> Result<ZhihuExport> {
+    let target = parse_target(input)?;
+    if all_answers {
+        if let Target::Answer(_) = &target {
+            let id = match question_id_from_link(input) {
+                Some(id) => id,
+                None => {
+                    let body = fetch_endpoint(&api_url(&target))?;
+                    value_id(body.pointer("/question/id").unwrap_or(&Value::Null))
+                        .context("无法识别这个回答所属的问题")?
+                }
+            };
+            return fetch_question_to_file(&id, output_dir, from, to);
+        }
+    }
+    fetch_to_file_range(input, output_dir, from, to)
 }
 
 pub fn fetch_to_file_range(
@@ -425,6 +553,102 @@ pub fn fetch_to_file(input: &str, output_dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_is_kept_in_memory_and_exports_only_confirmed_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let preview = load_question_with("123", |_| Ok(serde_json::json!({
+            "data": (1..=4).map(|id| serde_json::json!({"id":id,"question":{"title":"预览测试"},"content":format!("<p>正文{id}</p>")})).collect::<Vec<_>>(),
+            "paging":{"is_end":true,"totals":4}
+        }))).unwrap();
+        assert_eq!(preview.count(), 4);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(preview
+            .export(dir.path(), Some(0), Some(2), crate::export::TextFormat::Txt)
+            .is_err());
+        assert!(preview
+            .export(dir.path(), Some(2), Some(5), crate::export::TextFormat::Txt)
+            .is_err());
+        assert!(preview
+            .export(dir.path(), Some(3), Some(2), crate::export::TextFormat::Txt)
+            .is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let saved = preview
+            .export(
+                dir.path(),
+                Some(2),
+                Some(3),
+                crate::export::TextFormat::Markdown,
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(saved.path).unwrap();
+        assert!(text.contains("正文2") && text.contains("正文3"));
+        assert!(!text.contains("正文1") && !text.contains("正文4"));
+        assert_eq!((saved.first, saved.last, saved.total), (2, 3, 4));
+    }
+
+    #[test]
+    fn exports_more_answers_across_pages_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let answer = |id: u64| serde_json::json!({"id": id, "question": {"title":"分页问题"}, "author":{"name":format!("作者{id}")}, "content": format!("<p>回答正文{id}</p>")});
+        let mut calls = 0;
+        let export = fetch_question_with("123", dir.path(), None, None, |url| {
+            calls += 1;
+            Ok(if calls == 1 {
+                serde_json::json!({"data":[answer(900000000000000001),answer(2)],"paging":{"totals":3,"is_end":false,"next":"/v4/questions/123/answers?offset=2"}})
+            } else {
+                assert!(url.ends_with("offset=2"));
+                serde_json::json!({"data":[answer(2),answer(3)],"paging":{"totals":3,"is_end":true}})
+            })
+        }).unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!((export.total, export.first, export.last), (3, 1, 3));
+        let text = std::fs::read_to_string(export.path).unwrap();
+        assert!(text.contains("回答 3 | 作者3"));
+        assert_eq!(text.matches("回答正文2").count(), 1);
+        assert!(text.contains("/answer/900000000000000001"));
+        assert_eq!(
+            question_id_from_link("https://www.zhihu.com/question/123/answer/456"),
+            Some("123".into())
+        );
+    }
+
+    #[test]
+    fn refuses_incomplete_repeated_pagination() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = fetch_question_with("123", dir.path(), None, None, |url| {
+            Ok(serde_json::json!({
+                "data":[{"id":"1","content":"<p>正文</p>"}],
+                "paging":{"is_end":false,"next":url}
+            }))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("分页重复"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[ignore = "需要网络，验证用户反馈的更多回答"]
+    fn fetches_reported_answer_with_all_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let preview = fetch_content(
+            "https://www.zhihu.com/question/2059626138549350826/answer/2072289562546774195",
+            true,
+        )
+        .unwrap();
+        println!(
+            "预览获取 {} 条回答，接口总数 {}",
+            preview.count(),
+            preview.total
+        );
+        assert!(preview.count() > 1);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let export = preview
+            .export(dir.path(), Some(2), Some(3), crate::export::TextFormat::Pdf)
+            .unwrap();
+        assert_eq!((export.first, export.last), (2, 3));
+        assert!(std::fs::metadata(export.path).unwrap().len() > 100);
+    }
 
     #[test]
     fn parses_answer_and_article_links() {

@@ -3,7 +3,7 @@ name = "bili-subtitle-downloader"
 version = "1.4.4"
 edition = "2021"
 default-run = "bili-subtitle-downloader"
-description = "输入B站链接下载字幕的桌面应用"
+description = "拾文：字幕提取、视频下载与音视频转文字"
 
 [dependencies]
 eframe = "0.29"
@@ -17,6 +17,13 @@ reqwest_cookie_store = "0.8"
 cookie_store = "0.21"
 html2text = "0.17.1"
 zhihu_sign = "0.1.0"
+docx-rs = "0.4"
+printpdf = { version = "0.7", default-features = false }
+tempfile = "3"
+ttf-parser = "0.19"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
 
 [profile.release]
 opt-level = 3

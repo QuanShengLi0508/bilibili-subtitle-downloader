@@ -1,0 +1,11 @@
+拾文随附组件与来源
+
+FFmpeg 9.0.2：许可证见 FFmpeg-LICENSE.txt。
+Windows 构建与对应源代码下载：https://www.gyan.dev/ffmpeg/builds/
+官方源代码：https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+
+whisper.cpp 1.7.6 与 ggml：MIT License
+https://github.com/ggml-org/whisper.cpp/tree/v1.7.6
+SDL2：zlib License，https://libsdl.org/
+yt-dlp：Unlicense，打包版第三方依赖许可证见 https://github.com/yt-dlp/yt-dlp/blob/master/THIRD_PARTY_LICENSES
+Microsoft Visual C++ Runtime：Microsoft 可再发行组件，随应用使用。
