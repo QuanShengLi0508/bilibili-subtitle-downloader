@@ -8,7 +8,9 @@ use crate::zhihu;
 use anyhow::Result;
 use eframe::egui;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -20,8 +22,14 @@ enum Mode {
 }
 
 enum Msg {
-    VideoLoaded(Box<VideoInfo>, usize, Vec<SubTrack>, Vec<VideoStream>),
-    TracksLoaded(usize, Vec<SubTrack>, Vec<VideoStream>),
+    VideoLoaded(
+        Box<VideoInfo>,
+        usize,
+        Vec<SubTrack>,
+        Vec<VideoStream>,
+        Vec<String>,
+    ),
+    TracksLoaded(usize, Vec<SubTrack>, Vec<VideoStream>, Vec<String>),
     Saved(Result<String>),
     Failed(String),
     VideoStage(String),
@@ -63,6 +71,7 @@ struct App {
     rx: Receiver<Msg>,
     qr_texture: Option<egui::TextureHandle>,
     qr_stage: Option<String>,
+    qr_cancelled: Arc<AtomicBool>,
     logged_in: bool,
 }
 
@@ -93,6 +102,7 @@ impl App {
             rx,
             qr_texture: None,
             qr_stage: None,
+            qr_cancelled: Arc::new(AtomicBool::new(false)),
             logged_in: Client::has_saved_cookies(),
         }
     }
@@ -104,6 +114,10 @@ impl App {
             return;
         }
         self.external = None;
+        self.video = None;
+        self.tracks.clear();
+        self.streams.clear();
+        self.video_progress = None;
         self.busy = true;
 
         if external::is_supported(&input) {
@@ -140,9 +154,14 @@ impl App {
             let client = Client::new();
             match client.fetch_video(&input) {
                 Ok((video, page)) => {
-                    let streams = client.fetch_streams(&video, page).unwrap_or_default();
-                    let tracks = client.fetch_tracks(&video, page).unwrap_or_default();
-                    let _ = tx.send(Msg::VideoLoaded(Box::new(video), page, tracks, streams));
+                    let (tracks, streams, errors) = load_media_options(&client, &video, page);
+                    let _ = tx.send(Msg::VideoLoaded(
+                        Box::new(video),
+                        page,
+                        tracks,
+                        streams,
+                        errors,
+                    ));
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::Failed(format!("获取视频信息失败: {e:#}")));
@@ -178,9 +197,8 @@ impl App {
         let tx = self.tx.clone();
         thread::spawn(move || {
             let client = Client::new();
-            let streams = client.fetch_streams(&video, page).unwrap_or_default();
-            let tracks = client.fetch_tracks(&video, page).unwrap_or_default();
-            let _ = tx.send(Msg::TracksLoaded(page, tracks, streams));
+            let (tracks, streams, errors) = load_media_options(&client, &video, page);
+            let _ = tx.send(Msg::TracksLoaded(page, tracks, streams, errors));
         });
     }
 
@@ -244,59 +262,23 @@ impl App {
         thread::spawn(move || {
             let client = Client::new();
             let res = (|| -> Result<String> {
-                if stream.audio_url.is_some() && !Client::ffmpeg_available() {
-                    anyhow::bail!(
-                        "未检测到 ffmpeg，无法合并音视频。请先安装: winget install Gyan.FFmpeg"
-                    );
-                }
-
                 let mut name = sanitize_filename(&title);
                 if page > 1 {
                     name.push_str(&format!("_P{page}"));
                 }
                 name.push_str(&format!("_{}.mp4", stream.quality_id));
-                std::fs::create_dir_all(&dir)?;
-                let out_path = dir.join(&name);
-                let video_tmp = dir.join(format!("{name}.video.tmp"));
-                let audio_tmp = dir.join(format!("{name}.audio.tmp"));
-
-                match &stream.audio_url {
-                    Some(audio) => {
-                        let progress_tx = tx.clone();
-                        client.download_to_file(&stream.video_url, &video_tmp, &|p| {
-                            let _ = progress_tx.send(Msg::VideoProgress(p));
-                        })?;
-                        let _ = tx.send(Msg::VideoStage("正在下载音频...".into()));
-                        let progress_tx = tx.clone();
-                        client.download_to_file(audio, &audio_tmp, &|p| {
-                            let _ = progress_tx.send(Msg::VideoProgress(p));
-                        })?;
-                        let _ = tx.send(Msg::VideoStage("正在合并音视频...".into()));
+                let out_path = client.download_video_stream(
+                    &stream,
+                    &dir,
+                    &name,
+                    &|p| {
+                        let _ = tx.send(Msg::VideoProgress(p));
+                    },
+                    &|stage| {
+                        let _ = tx.send(Msg::VideoStage(stage.into()));
                         let _ = tx.send(Msg::VideoProgress(0.0));
-                        let status = std::process::Command::new("ffmpeg")
-                            .args(["-y", "-i"])
-                            .arg(&video_tmp)
-                            .args(["-i"])
-                            .arg(&audio_tmp)
-                            .args(["-c", "copy"])
-                            .arg(&out_path)
-                            .output()?;
-                        if !status.status.success() {
-                            anyhow::bail!(
-                                "ffmpeg 合并失败: {}",
-                                String::from_utf8_lossy(&status.stderr)
-                            );
-                        }
-                        let _ = std::fs::remove_file(&video_tmp);
-                        let _ = std::fs::remove_file(&audio_tmp);
-                    }
-                    None => {
-                        let progress_tx = tx.clone();
-                        client.download_to_file(&stream.video_url, &out_path, &|p| {
-                            let _ = progress_tx.send(Msg::VideoProgress(p));
-                        })?;
-                    }
-                }
+                    },
+                )?;
                 Ok(out_path.display().to_string())
             })();
             let _ = tx.send(Msg::VideoSaved(res));
@@ -402,6 +384,8 @@ impl App {
     }
 
     fn spawn_qr_login(&mut self) {
+        self.qr_cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = self.qr_cancelled.clone();
         self.busy = true;
         self.status = "正在生成登录二维码...".into();
         let tx = self.tx.clone();
@@ -436,7 +420,14 @@ impl App {
             let _ = tx.send(Msg::QrReady { w, pixels });
             for _ in 0..60 {
                 std::thread::sleep(std::time::Duration::from_millis(2000));
-                match client.qr_poll(&qr.qrcode_key) {
+                if cancelled.load(Ordering::Relaxed) {
+                    return;
+                }
+                let poll = client.qr_poll(&qr.qrcode_key);
+                if cancelled.load(Ordering::Relaxed) {
+                    return;
+                }
+                match poll {
                     Ok(QrPoll::Waiting) => {
                         let _ = tx.send(Msg::QrStage("等待扫码...".into()));
                     }
@@ -457,13 +448,28 @@ impl App {
                     }
                 }
             }
-            let _ = tx.send(Msg::Failed("登录超时，请重新扫码".into()));
+            if !cancelled.load(Ordering::Relaxed) {
+                let _ = tx.send(Msg::Failed("登录超时，请重新扫码".into()));
+            }
         });
     }
 
     fn poll_messages(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
-            self.busy = false;
+            if self.qr_cancelled.load(Ordering::Relaxed)
+                && matches!(
+                    &msg,
+                    Msg::QrReady { .. } | Msg::QrStage(_) | Msg::QrConfirmed
+                )
+            {
+                continue;
+            }
+            if !matches!(
+                &msg,
+                Msg::VideoStage(_) | Msg::VideoProgress(_) | Msg::QrStage(_) | Msg::QrReady { .. }
+            ) {
+                self.busy = false;
+            }
             match msg {
                 Msg::ExternalLoaded(video) => {
                     self.video = None;
@@ -482,27 +488,28 @@ impl App {
                         self.status = format!("下载失败: {e:#}");
                     }
                 },
-                Msg::VideoLoaded(video, page, tracks, streams) => {
-                    self.selected_page = page.min(video.pages.len().max(1));
+                Msg::VideoLoaded(video, page, tracks, streams, errors) => {
                     self.selected_page = video
                         .pages
                         .iter()
                         .find(|p| p.page == page)
                         .map(|p| p.page)
-                        .unwrap_or(1);
+                        .unwrap_or_else(|| video.pages[0].page);
                     self.video = Some(*video);
                     self.tracks = tracks;
                     self.selected_track = 0;
                     self.streams = streams;
                     self.selected_stream = 0;
-                    if self.streams.is_empty() {
+                    if !errors.is_empty() {
+                        self.status = errors.join("；");
+                    } else if self.mode == Mode::Video && self.streams.is_empty() {
                         self.status = "获取到视频信息，但没有可用画质".into();
-                    } else if self.tracks.is_empty() {
-                        if self.logged_in {
-                            self.status = "没有可下载的字幕，但可以下载视频".into();
+                    } else if self.mode == Mode::Subtitle && self.tracks.is_empty() {
+                        self.status = if self.logged_in {
+                            "没有可下载的字幕".into()
                         } else {
-                            self.status = "未登录：AI字幕需要登录；当前仍可下载视频".into();
-                        }
+                            "未登录：AI字幕需要登录才能获取".into()
+                        };
                     } else {
                         self.status = format!(
                             "获取到 {} 条字幕、{} 个画质",
@@ -511,16 +518,18 @@ impl App {
                         );
                     }
                 }
-                Msg::TracksLoaded(page, tracks, streams) => {
+                Msg::TracksLoaded(page, tracks, streams, errors) => {
                     self.selected_page = page;
                     self.tracks = tracks;
                     self.selected_track = 0;
                     self.streams = streams;
                     self.selected_stream = 0;
-                    if self.streams.is_empty() {
+                    if !errors.is_empty() {
+                        self.status = errors.join("；");
+                    } else if self.mode == Mode::Video && self.streams.is_empty() {
                         self.status = "该分P没有可用画质".into();
-                    } else if self.tracks.is_empty() {
-                        self.status = "该分P没有可下载的字幕，但可以下载视频".into();
+                    } else if self.mode == Mode::Subtitle && self.tracks.is_empty() {
+                        self.status = "该分P没有可下载的字幕".into();
                     } else {
                         self.status = format!(
                             "获取到 {} 条字幕、{} 个画质",
@@ -563,7 +572,11 @@ impl App {
                     Ok(path) => self.status = format!("已保存: {path}"),
                     Err(e) => self.status = format!("保存失败: {e:#}"),
                 },
-                Msg::Failed(e) => self.status = e,
+                Msg::Failed(e) => {
+                    self.status = e;
+                    self.qr_stage = None;
+                    self.qr_texture = None;
+                }
                 Msg::QrReady { w, pixels } => {
                     let image = egui::ColorImage {
                         size: [w, w],
@@ -572,7 +585,6 @@ impl App {
                     self.qr_texture =
                         Some(ctx.load_texture("qr", image, egui::TextureOptions::NEAREST));
                     self.qr_stage = Some("请用B站App扫一扫".into());
-                    self.busy = false;
                 }
                 Msg::QrStage(s) => {
                     self.qr_stage = Some(s);
@@ -593,9 +605,29 @@ impl App {
     }
 }
 
+fn load_media_options(
+    client: &Client,
+    video: &VideoInfo,
+    page: usize,
+) -> (Vec<SubTrack>, Vec<VideoStream>, Vec<String>) {
+    let mut errors = Vec::new();
+    let tracks = client.fetch_tracks(video, page).unwrap_or_else(|e| {
+        errors.push(format!("获取字幕列表失败: {e:#}"));
+        Vec::new()
+    });
+    let streams = client.fetch_streams(video, page).unwrap_or_else(|e| {
+        errors.push(format!("获取画质列表失败: {e:#}"));
+        Vec::new()
+    });
+    (tracks, streams, errors)
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_messages(ctx);
+        if self.busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(16.0);
@@ -646,25 +678,40 @@ impl eframe::App for App {
                         .color(egui::Color32::from_gray(120)),
                 );
                 if ui
-                    .selectable_label(self.mode == Mode::Subtitle, "下载字幕")
+                    .add_enabled(
+                        !self.busy,
+                        egui::SelectableLabel::new(self.mode == Mode::Subtitle, "下载字幕"),
+                    )
                     .clicked()
                 {
                     self.mode = Mode::Subtitle;
                 }
                 if ui
-                    .selectable_label(self.mode == Mode::Video, "下载视频")
+                    .add_enabled(
+                        !self.busy,
+                        egui::SelectableLabel::new(self.mode == Mode::Video, "下载视频"),
+                    )
                     .clicked()
                 {
                     self.mode = Mode::Video;
                 }
                 if ui
-                    .selectable_label(self.mode == Mode::Transcribe, "音频/视频转文字")
+                    .add_enabled(
+                        !self.busy,
+                        egui::SelectableLabel::new(
+                            self.mode == Mode::Transcribe,
+                            "音频/视频转文字",
+                        ),
+                    )
                     .clicked()
                 {
                     self.mode = Mode::Transcribe;
                 }
                 if ui
-                    .selectable_label(self.mode == Mode::WebText, "知乎文本")
+                    .add_enabled(
+                        !self.busy,
+                        egui::SelectableLabel::new(self.mode == Mode::WebText, "知乎文本"),
+                    )
                     .clicked()
                 {
                     self.mode = Mode::WebText;
@@ -681,13 +728,20 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let enabled = !self.busy;
-                            ui.add_enabled(
+                            let edited = ui.add_enabled(
                                 enabled,
                                 egui::TextEdit::singleline(&mut self.link)
                                     .hint_text("知乎回答 / 知乎专栏链接")
                                     .desired_width(ui.available_width() - 96.0),
                             );
-                            if primary_button(ui, "直接获取文字", enabled) {
+                            if edited.changed() {
+                                self.video = None;
+                                self.external = None;
+                            }
+                            let enter = edited.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if primary_button(ui, "直接获取文字", enabled) || (enabled && enter)
+                            {
                                 self.spawn_fetch_zhihu();
                             }
                         });
@@ -732,18 +786,26 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let enabled = !self.busy;
-                            ui.add_enabled(
+                            let edited = ui.add_enabled(
                                 enabled,
                                 egui::TextEdit::singleline(&mut self.link)
                                     .hint_text("B站 / 抖音 / 小红书视频链接")
                                     .desired_width(ui.available_width() - 96.0),
                             );
+                            if edited.changed() {
+                                self.video = None;
+                                self.external = None;
+                                self.tracks.clear();
+                                self.streams.clear();
+                            }
                             let fetch_label = if self.mode == Mode::Video {
                                 "获取视频"
                             } else {
                                 "获取字幕"
                             };
-                            if primary_button(ui, fetch_label, enabled) {
+                            let enter = edited.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if primary_button(ui, fetch_label, enabled) || (enabled && enter) {
                                 self.spawn_fetch_video();
                             }
                         });
@@ -871,7 +933,7 @@ impl eframe::App for App {
                 );
             });
 
-            if let Some(stage) = &self.qr_stage {
+            if let Some(stage) = self.qr_stage.clone() {
                 ui.add_space(12.0);
                 ui.vertical_centered(|ui| {
                     if let Some(tex) = &self.qr_texture {
@@ -893,10 +955,17 @@ impl eframe::App for App {
                             .size(13.0)
                             .color(egui::Color32::from_gray(90)),
                     );
+                    if ui.small_button("取消登录").clicked() {
+                        self.qr_cancelled.store(true, Ordering::Relaxed);
+                        self.qr_stage = None;
+                        self.qr_texture = None;
+                        self.busy = false;
+                        self.status = "已取消扫码登录".into();
+                    }
                 });
             }
 
-            let video_info = if self.mode == Mode::Transcribe {
+            let video_info = if matches!(self.mode, Mode::Transcribe | Mode::WebText) {
                 None
             } else {
                 self.video.as_ref().map(|v| {
@@ -907,7 +976,8 @@ impl eframe::App for App {
                     )
                 })
             };
-            if let Some(external_video) = self.external.clone() {
+            if let Some(external_video) = self.external.clone().filter(|_| self.mode == Mode::Video)
+            {
                 ui.add_space(10.0);
                 egui::Frame::default()
                     .fill(egui::Color32::WHITE)

@@ -30,11 +30,36 @@ pub fn find_yt_dlp() -> Option<PathBuf> {
 }
 
 pub fn is_supported(url: &str) -> bool {
-    let lower = url.to_lowercase();
-    lower.contains("douyin.com")
-        || lower.contains("iesdouyin.com")
-        || lower.contains("xiaohongshu.com")
-        || lower.contains("xhslink.com")
+    let Ok(parsed) = reqwest::Url::parse(url.trim()) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    [
+        "douyin.com",
+        "iesdouyin.com",
+        "xiaohongshu.com",
+        "xhslink.com",
+    ]
+    .iter()
+    .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_supported;
+
+    #[test]
+    fn only_supported_hosts_are_external_videos() {
+        assert!(is_supported("https://www.douyin.com/video/123"));
+        assert!(is_supported("https://xhslink.com/abc"));
+        assert!(!is_supported("https://douyin.com.evil.test/video/123"));
+        assert!(!is_supported("https://evil.test/?q=douyin.com"));
+    }
 }
 
 pub fn probe(url: &str, tool: &Path) -> Result<ExternalVideo> {

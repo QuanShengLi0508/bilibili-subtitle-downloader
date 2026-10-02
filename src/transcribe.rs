@@ -76,44 +76,50 @@ pub fn run(media: &Path, model: &Path, language: &str, output_dir: &Path) -> Res
     let out_base = output_dir.join(format!("{base_name}_转写"));
     let wav_path = output_dir.join(format!("{base_name}_转写.tmp.wav"));
 
-    let convert = std::process::Command::new("ffmpeg")
-        .arg("-y")
-        .arg("-i")
-        .arg(media)
-        .args(["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
-        .arg(&wav_path)
-        .output()
-        .context("启动 ffmpeg 失败")?;
-    if !convert.status.success() {
-        bail!(
-            "ffmpeg 转换音频失败: {}",
-            String::from_utf8_lossy(&convert.stderr)
-        );
-    }
+    let result = (|| -> Result<Vec<PathBuf>> {
+        let convert = std::process::Command::new("ffmpeg")
+            .arg("-y")
+            .arg("-i")
+            .arg(media)
+            .args(["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+            .arg(&wav_path)
+            .output()
+            .context("启动 ffmpeg 失败")?;
+        if !convert.status.success() {
+            bail!(
+                "ffmpeg 转换音频失败: {}",
+                String::from_utf8_lossy(&convert.stderr)
+            );
+        }
 
-    let result = std::process::Command::new(&cli)
-        .arg("-m")
-        .arg(model)
-        .arg("-f")
-        .arg(&wav_path)
-        .args(["-l", language, "-otxt", "-osrt"])
-        .arg("-of")
-        .arg(&out_base)
-        .output()
-        .context("启动 whisper-cli 失败")?;
+        let result = std::process::Command::new(&cli)
+            .arg("-m")
+            .arg(model)
+            .arg("-f")
+            .arg(&wav_path)
+            .args(["-l", language, "-otxt", "-osrt"])
+            .arg("-of")
+            .arg(&out_base)
+            .output()
+            .context("启动 whisper-cli 失败")?;
 
+        if !result.status.success() {
+            bail!(
+                "Whisper 识别失败: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+
+        let txt_path = out_base.with_extension("txt");
+        let srt_path = out_base.with_extension("srt");
+        if !txt_path.is_file() {
+            bail!("Whisper 没有生成 TXT 文件");
+        }
+        if !srt_path.is_file() {
+            bail!("Whisper 没有生成 SRT 文件");
+        }
+        Ok(vec![txt_path, srt_path])
+    })();
     let _ = std::fs::remove_file(&wav_path);
-    if !result.status.success() {
-        bail!(
-            "Whisper 识别失败: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-    }
-
-    let txt_path = out_base.with_extension("txt");
-    let srt_path = out_base.with_extension("srt");
-    if !txt_path.is_file() {
-        bail!("Whisper 没有生成 TXT 文件");
-    }
-    Ok(vec![txt_path, srt_path])
+    result
 }

@@ -1,7 +1,8 @@
 [package]
 name = "bili-subtitle-downloader"
-version = "1.4.2"
+version = "1.4.4"
 edition = "2021"
+default-run = "bili-subtitle-downloader"
 description = "输入B站链接下载字幕的桌面应用"
 
 [dependencies]

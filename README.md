@@ -8,15 +8,17 @@
 
 ### 图形界面
 
-双击 `target/release/bili-subtitle-downloader.exe`（或运行 `cargo run --release`）。
+双击项目根目录的 `B站字幕下载器.exe`（或运行 `cargo run --release`）。图形版启动时不会弹出终端窗口。
 
 1. 粘贴B站视频链接（支持 `www.bilibili.com/video/BV...`、`b23.tv` 短链接、纯 BV 号 / AV 号）。
+   在链接输入框按回车也可以获取内容。
 2. 在「下载字幕」和「下载视频」之间切换模式。
 3. 多P视频先选分P。
 4. 字幕模式：选择字幕语言，点击「下载 TXT」或「下载 SRT」。
 5. 视频模式：选择清晰度，点击「下载视频」；DASH 视频会下载画面和音频，并用 ffmpeg 合并为 MP4。
 
 文件默认保存在 `字幕输出` 文件夹，也可以在底部点击「更改」选择其他目录。
+下载中会显示进度；失败的下载不会留下不完整的成品文件。
 
 ## 登录（重要）
 
@@ -26,6 +28,7 @@ B站限制：
 - **4K、1080P 高码率等高画质通常也需要登录**，未登录时可能只能看到 720P / 480P / 360P。
 
 点击「扫码登录」，用B站 App 扫窗口里的二维码即可。登录成功后 Cookie 会保存在 `C:\Users\<用户名>\.bili-subtitle-cookies.json`，下次启动自动生效；点「退出登录」可清除。
+扫码等待期间可以点击「取消登录」。
 
 ### 视频下载依赖
 
@@ -40,17 +43,17 @@ winget install Gyan.FFmpeg
 ### 命令行
 
 ```text
-bili-subtitle-downloader.exe <链接>              # 下载第一条字幕为 TXT
-bili-subtitle-downloader.exe --srt <链接>        # 下载第一条字幕为 SRT
-bili-subtitle-downloader.exe --streams <链接>    # 查看可用画质
-bili-subtitle-downloader.exe --video <链接> [qn] # 下载视频，默认最高画质
+bili-subtitle-cli.exe <链接>              # 下载第一条字幕为 TXT
+bili-subtitle-cli.exe --srt <链接>        # 下载第一条字幕为 SRT
+bili-subtitle-cli.exe --streams <链接>    # 查看可用画质
+bili-subtitle-cli.exe --video <链接> [qn] # 下载视频，默认最高画质
 ```
 
 例如查看画质后下载 1080P（清晰度 ID 为 80）：
 
 ```text
-bili-subtitle-downloader.exe --streams BV1xxxxxxxx
-bili-subtitle-downloader.exe --video BV1xxxxxxxx 80
+bili-subtitle-cli.exe --streams BV1xxxxxxxx
+bili-subtitle-cli.exe --video BV1xxxxxxxx 80
 ```
 
 ## 说明
@@ -80,11 +83,13 @@ bili-subtitle-downloader.exe --video BV1xxxxxxxx 80
 - 音频和文件只在本地处理，不会上传到服务器。
 ## 构建
 
-需要 Rust 工具链（本机已安装 GNU 版）：
+需要 Rust 工具链。在 PowerShell 中执行：
 
 ```powershell
-cargo build --release
+.\build-release.ps1
 ```
+
+脚本会更新根目录的图形版、命令行版和 `release-package` 目录；若要生成安装包，再用 Inno Setup 编译 `installer/installer.iss`。
 
 ### 第三方组件
 

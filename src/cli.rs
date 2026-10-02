@@ -40,27 +40,26 @@ pub fn run(input: &str) -> Result<()> {
     let (video, page) = client.fetch_video(&input)?;
     println!("视频: {} (共 {} 个分P)", video.title, video.pages.len());
 
-    println!("正在获取字幕列表...");
-    let tracks = client.fetch_tracks(&video, page)?;
     if debug {
         println!("{}", client.debug_tracks_json(&video, page)?);
         return Ok(());
     }
+    if streams_only || video_mode {
+        println!("正在获取画质列表...");
+        let streams = client.fetch_streams(&video, page)?;
+        for s in &streams {
+            println!("可用画质: {} [{}]", s.label, s.quality_id);
+        }
+        if streams_only {
+            return Ok(());
+        }
+        return download_video(&client, &video, page, &streams, video_qn);
+    }
+
+    println!("正在获取字幕列表...");
+    let tracks = client.fetch_tracks(&video, page)?;
     for t in &tracks {
         println!("可用字幕: {} [{}]", t.lan_doc, t.lan);
-    }
-
-    println!("正在获取画质列表...");
-    let streams = client.fetch_streams(&video, page).unwrap_or_default();
-    for s in &streams {
-        println!("可用画质: {} [{}]", s.label, s.quality_id);
-    }
-    if streams_only {
-        return Ok(());
-    }
-
-    if video_mode {
-        return download_video(&client, &video, page, &streams, video_qn);
     }
 
     if tracks.is_empty() {
@@ -109,58 +108,20 @@ fn download_video(
             .ok_or_else(|| anyhow!("没有指定的清晰度 {q}"))?,
     };
     println!("下载画质: {}", stream.label);
-    if stream.audio_url.is_some() && !Client::ffmpeg_available() {
-        bail!("未检测到 ffmpeg，无法合并音视频。请先安装: winget install Gyan.FFmpeg");
-    }
-
     let mut name = sanitize_filename(&video.title);
     if page > 1 {
         name.push_str(&format!("_P{page}"));
     }
     name.push_str(&format!("_{}.mp4", stream.quality_id));
     let dir = output_dir();
-    std::fs::create_dir_all(&dir)?;
-    let out_path = dir.join(&name);
-    let video_tmp = dir.join(format!("{name}.video.tmp"));
-    let audio_tmp = dir.join(format!("{name}.audio.tmp"));
-
-    match &stream.audio_url {
-        Some(audio) => {
-            println!("下载画面...");
-            client.download_to_file(&stream.video_url, &video_tmp, &|p| {
-                print!("\r进度: {:.1}%  ", p * 100.0);
-            })?;
-            println!();
-            println!("下载音频...");
-            client.download_to_file(audio, &audio_tmp, &|p| {
-                print!("\r进度: {:.1}%  ", p * 100.0);
-            })?;
-            println!();
-            println!("合并音视频...");
-            let status = std::process::Command::new("ffmpeg")
-                .args(["-y", "-i"])
-                .arg(&video_tmp)
-                .args(["-i"])
-                .arg(&audio_tmp)
-                .args(["-c", "copy"])
-                .arg(&out_path)
-                .output()?;
-            if !status.status.success() {
-                bail!(
-                    "ffmpeg 合并失败: {}",
-                    String::from_utf8_lossy(&status.stderr)
-                );
-            }
-            let _ = std::fs::remove_file(&video_tmp);
-            let _ = std::fs::remove_file(&audio_tmp);
-        }
-        None => {
-            client.download_to_file(&stream.video_url, &out_path, &|p| {
-                print!("\r进度: {:.1}%  ", p * 100.0);
-            })?;
-            println!();
-        }
-    }
+    let out_path = client.download_video_stream(
+        stream,
+        &dir,
+        &name,
+        &|p| print!("\r进度: {:.1}%  ", p * 100.0),
+        &|stage| println!("\n{stage}"),
+    )?;
+    println!();
     println!("已保存: {}", out_path.display());
     Ok(())
 }

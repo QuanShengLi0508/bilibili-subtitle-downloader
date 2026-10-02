@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest_cookie_store::CookieStoreMutex;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -133,23 +133,28 @@ impl Client {
         if input.is_empty() {
             bail!("请输入B站视频链接");
         }
-        let lower = input.to_ascii_lowercase();
-        if lower.contains("b23.tv")
-            || lower.starts_with("http")
-                && extract_bvid(input).is_none()
-                && extract_aid(input).is_none()
-        {
-            // 短链接：跟随重定向拿到最终地址
-            let resp = self
-                .http
-                .get(input)
-                .header("Referer", "https://www.bilibili.com/")
-                .send()?;
-            let final_url = resp.url().to_string();
-            if extract_bvid(&final_url).is_none() && extract_aid(&final_url).is_none() {
-                bail!("无法从链接中识别视频ID: {final_url}");
+        if input.starts_with("http://") || input.starts_with("https://") {
+            let parsed = reqwest::Url::parse(input).context("链接格式不正确")?;
+            let host = parsed.host_str().unwrap_or_default();
+            if host == "b23.tv" || host.ends_with(".b23.tv") {
+                // 短链接：跟随重定向拿到最终地址
+                let resp = self
+                    .http
+                    .get(input)
+                    .header("Referer", "https://www.bilibili.com/")
+                    .send()?;
+                let final_url = resp.url().to_string();
+                if !is_bilibili_host(resp.url().host_str().unwrap_or_default()) {
+                    bail!("短链接未跳转到B站视频页面");
+                }
+                if extract_bvid(&final_url).is_none() && extract_aid(&final_url).is_none() {
+                    bail!("无法从链接中识别视频ID: {final_url}");
+                }
+                return Ok(final_url);
             }
-            return Ok(final_url);
+            if !is_bilibili_host(host) {
+                bail!("仅支持B站视频链接、b23.tv短链接或BV/AV号");
+            }
         }
         Ok(input.to_string())
     }
@@ -433,23 +438,95 @@ impl Client {
         if !resp.status().is_success() {
             bail!("下载失败: HTTP {}", resp.status());
         }
-        let total = resp.content_length().unwrap_or(0) as f64;
-        let mut file = std::fs::File::create(path)?;
-        let mut downloaded: u64 = 0;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = resp.read(&mut buf)?;
-            if n == 0 {
-                break;
+        let total = resp.content_length();
+        let mut part_name = path.as_os_str().to_os_string();
+        part_name.push(".part");
+        let part = PathBuf::from(part_name);
+        let result = (|| -> Result<()> {
+            let mut file = std::fs::File::create(&part)?;
+            let mut downloaded: u64 = 0;
+            let mut last_progress = -1.0_f64;
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = resp.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                file.write_all(&buf[..n])?;
+                downloaded += n as u64;
+                if let Some(total) = total.filter(|n| *n > 0) {
+                    let current = (downloaded as f64 / total as f64).min(1.0);
+                    if current - last_progress >= 0.005 || (current >= 1.0 && last_progress < 1.0) {
+                        progress(current);
+                        last_progress = current;
+                    }
+                }
             }
-            file.write_all(&buf[..n])?;
-            downloaded += n as u64;
-            if total > 0.0 {
-                progress(downloaded as f64 / total);
+            file.flush()?;
+            if let Some(total) = total {
+                if downloaded != total {
+                    bail!("下载不完整：预期 {total} 字节，实际 {downloaded} 字节");
+                }
             }
+            std::fs::rename(&part, path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&part);
         }
-        file.flush()?;
-        Ok(())
+        result
+    }
+
+    pub fn download_video_stream(
+        &self,
+        stream: &VideoStream,
+        dir: &Path,
+        name: &str,
+        progress: &dyn Fn(f64),
+        stage: &dyn Fn(&str),
+    ) -> Result<PathBuf> {
+        std::fs::create_dir_all(dir)?;
+        let output = dir.join(name);
+        if let Some(audio_url) = &stream.audio_url {
+            if !Self::ffmpeg_available() {
+                bail!("未检测到 ffmpeg，无法合并音视频。请先安装: winget install Gyan.FFmpeg");
+            }
+            let video_tmp = dir.join(format!("{name}.video.tmp"));
+            let audio_tmp = dir.join(format!("{name}.audio.tmp"));
+            let merge_tmp = dir.join(format!("{name}.merge.mp4"));
+            let result = (|| -> Result<()> {
+                stage("正在下载视频画面...");
+                self.download_to_file(&stream.video_url, &video_tmp, progress)?;
+                stage("正在下载音频...");
+                self.download_to_file(audio_url, &audio_tmp, progress)?;
+                stage("正在合并音视频...");
+                let merged = std::process::Command::new("ffmpeg")
+                    .args(["-y", "-i"])
+                    .arg(&video_tmp)
+                    .arg("-i")
+                    .arg(&audio_tmp)
+                    .args(["-c", "copy"])
+                    .arg(&merge_tmp)
+                    .output()
+                    .context("启动 ffmpeg 失败")?;
+                if !merged.status.success() {
+                    bail!(
+                        "ffmpeg 合并失败: {}",
+                        String::from_utf8_lossy(&merged.stderr)
+                    );
+                }
+                std::fs::rename(&merge_tmp, &output)?;
+                Ok(())
+            })();
+            let _ = std::fs::remove_file(&video_tmp);
+            let _ = std::fs::remove_file(&audio_tmp);
+            let _ = std::fs::remove_file(&merge_tmp);
+            result?;
+        } else {
+            stage("正在下载视频...");
+            self.download_to_file(&stream.video_url, &output, progress)?;
+        }
+        Ok(output)
     }
 
     fn wbi_keys(&self) -> Result<(String, String)> {
@@ -518,6 +595,29 @@ fn file_key(url: &str) -> Result<String> {
         bail!("wbi key 解析失败: {url}");
     }
     Ok(key.to_string())
+}
+
+fn is_bilibili_host(host: &str) -> bool {
+    host == "bilibili.com" || host.ends_with(".bilibili.com")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_bilibili_host, sanitize_filename};
+
+    #[test]
+    fn bilibili_host_check_rejects_lookalikes() {
+        assert!(is_bilibili_host("www.bilibili.com"));
+        assert!(!is_bilibili_host("bilibili.com.evil.test"));
+        assert!(!is_bilibili_host("fakebilibili.com"));
+    }
+
+    #[test]
+    fn filenames_are_valid_on_windows() {
+        assert_eq!(sanitize_filename("  标题:第一集.  "), "标题_第一集");
+        assert_eq!(sanitize_filename("..."), "未命名");
+        assert_eq!(sanitize_filename("a\nb"), "a_b");
+    }
 }
 
 fn extract_bvid(s: &str) -> Option<String> {
@@ -605,12 +705,21 @@ pub fn lines_to_txt(lines: &[SubLine]) -> String {
 }
 
 pub fn sanitize_filename(s: &str) -> String {
-    s.chars()
+    let name = s
+        .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
             _ => c,
         })
+        .take(120)
         .collect::<String>()
+        .trim_end_matches([' ', '.'])
         .trim()
-        .to_string()
+        .to_string();
+    if name.is_empty() {
+        "未命名".into()
+    } else {
+        name
+    }
 }
