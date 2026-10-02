@@ -240,7 +240,22 @@ impl App {
                     ui.add_space((ui.available_width() - 150.0).max(0.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.vertical(|ui| {
-                            if self.logged_in {
+                            if self.mode == Mode::WebText {
+                                if secondary_button(ui, "知乎登录", !self.busy) {
+                                    self.spawn_zhihu_login();
+                                }
+                                ui.label(
+                                    egui::RichText::new(
+                                        if crate::zhihu_login::has_saved_session() {
+                                            "知乎已登录"
+                                        } else {
+                                            "登录后获取完整正文"
+                                        },
+                                    )
+                                    .size(11.0)
+                                    .color(MUTED),
+                                );
+                            } else if self.logged_in {
                                 if secondary_button(ui, "退出登录", !self.busy) {
                                     Client::clear_saved_cookies();
                                     self.logged_in = false;

@@ -43,6 +43,7 @@ enum Msg {
     TranscribeSaved(Result<Vec<PathBuf>>),
     ZhihuSaved(Result<zhihu::ZhihuExport>),
     ZhihuLoaded(Result<zhihu::ZhihuContent>),
+    ZhihuLoginFinished(Result<bool>),
     QrReady {
         w: usize,
         pixels: Vec<egui::Color32>,
@@ -85,6 +86,25 @@ struct App {
 }
 
 impl App {
+    fn spawn_zhihu_login(&mut self) {
+        self.busy = true;
+        self.zhihu_content = None;
+        self.status = "请在知乎官方窗口登录；完成后关闭登录窗口，再重新获取文章".into();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| -> Result<bool> {
+                let status = std::process::Command::new(std::env::current_exe()?)
+                    .arg("--zhihu-login")
+                    .status()?;
+                match status.code() {
+                    Some(0) => Ok(true),
+                    Some(2) => Ok(false),
+                    _ => anyhow::bail!("未能完成知乎登录，请重试"),
+                }
+            })();
+            let _ = tx.send(Msg::ZhihuLoginFinished(result));
+        });
+    }
     fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
         let icon = eframe::icon_data::from_png_bytes(LOGO_PNG).expect("Invalid application logo");
@@ -588,6 +608,14 @@ impl App {
                 }
                 Msg::VideoStage(s) => self.status = s,
                 Msg::VideoProgress(p) => self.video_progress = Some(p.clamp(0.0, 1.0)),
+                Msg::ZhihuLoginFinished(result) => {
+                    self.busy = false;
+                    self.status = match result {
+                        Ok(true) => "知乎已登录，请重新获取正文".into(),
+                        Ok(false) => "知乎登录尚未完成，请重试".into(),
+                        Err(error) => format!("知乎登录失败：{error:#}"),
+                    };
+                }
                 Msg::ZhihuLoaded(result) => match result {
                     Ok(content) => {
                         self.zhihu_from = "1".into();

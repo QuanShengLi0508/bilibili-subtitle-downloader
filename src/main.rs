@@ -8,8 +8,24 @@ mod external;
 mod gui;
 mod transcribe;
 mod zhihu;
+mod zhihu_login;
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|arg| arg == "--zhihu-login") {
+        let code = match zhihu_login::run_window() {
+            Ok(true) => 0,
+            Ok(false) => 2,
+            Err(error) => {
+                rfd::MessageDialog::new()
+                    .set_title("知乎登录")
+                    .set_description(format!("{error:#}"))
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     bili::configure_tools_path();
     gui::run()
 }

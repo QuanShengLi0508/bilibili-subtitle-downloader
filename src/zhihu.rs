@@ -147,8 +147,9 @@ fn error_message(value: &Value, status: u16) -> String {
 fn fetch_endpoint(endpoint: &str) -> Result<Value> {
     // The public endpoint accepts an anonymous fingerprint when the request is
     // signed consistently; this fixed value is only used to build that signature.
-    let d_c0 = "ZhihuAnonymousFingerprint00000000000000";
-    let signed = zhihu_sign::sign_zhihu_request(&endpoint, d_c0, None);
+    let (d_c0, cookies) =
+        crate::zhihu_login::request_identity(&crate::zhihu_login::saved_cookies());
+    let signed = zhihu_sign::sign_zhihu_request(&endpoint, &d_c0, None);
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -194,7 +195,7 @@ fn fetch_endpoint(endpoint: &str) -> Result<Value> {
         HeaderName::from_static("sec-fetch-site"),
         HeaderValue::from_static("same-site"),
     );
-    headers.insert(COOKIE, HeaderValue::from_str(&format!("d_c0={d_c0}"))?);
+    headers.insert(COOKIE, HeaderValue::from_str(&cookies)?);
     for (name, value) in signed {
         headers.insert(
             HeaderName::from_bytes(name.as_bytes())?,
@@ -229,6 +230,7 @@ fn answer_author(item: &Value) -> String {
 }
 
 fn answer_content(item: &Value) -> Result<String> {
+    ensure_complete(item)?;
     let html = item
         .get("content")
         .and_then(Value::as_str)
@@ -236,6 +238,21 @@ fn answer_content(item: &Value) -> Result<String> {
         .filter(|s| !s.trim().is_empty())
         .context("知乎接口没有返回回答正文")?;
     html_to_text(html)
+}
+
+fn ensure_complete(item: &Value) -> Result<()> {
+    for key in [
+        "content_need_truncated",
+        "is_truncated",
+        "is_content_truncated",
+        "content_is_truncated",
+    ] {
+        let flag = &item[key];
+        if flag == &Value::Bool(true) || flag == &serde_json::json!(1) || flag == "true" {
+            bail!("知乎只返回了节选，未获取全文。请点右上角「知乎登录」，完成登录后重新获取；本次不会导出。登录后仍被截断时，请确认账号可阅读全文。");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -553,6 +570,26 @@ pub fn fetch_to_file(input: &str, output_dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncated_article_and_answers_cannot_be_exported() {
+        let excerpt = serde_json::json!({"content": "<p>被截断的正文</p>", "content_need_truncated": true, "force_login_when_click_read_more": true});
+        assert!(answer_content(&excerpt)
+            .unwrap_err()
+            .to_string()
+            .contains("知乎登录"));
+        let question = load_question_with("123", |_| {
+            Ok(serde_json::json!({
+                "data": [{"id": "456", "content": "<p>回答节选</p>", "content_need_truncated": true}],
+                "paging": {"is_end": true}
+            }))
+        });
+        assert!(question.is_err());
+        let complete = serde_json::json!({"content": format!("<p>{}</p><p>最后一段完整保留。</p>", "长段落内容。".repeat(300)), "content_need_truncated": false});
+        assert!(answer_content(&complete)
+            .unwrap()
+            .ends_with("最后一段完整保留。"));
+    }
 
     #[test]
     fn preview_is_kept_in_memory_and_exports_only_confirmed_range() {
