@@ -175,6 +175,10 @@ impl App {
     }
     fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
+        let default_output = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("字幕输出")))
+            .unwrap_or_else(output_dir);
         let icon = eframe::icon_data::from_png_bytes(LOGO_PNG).expect("Invalid application logo");
         let logo = ctx.load_texture(
             "app-logo",
@@ -204,14 +208,14 @@ impl App {
             douyin_preview_open: false,
             media_file: None,
             text_format: TextFormat::Txt,
-            saved_files: recent_saved_file(&output_dir()).into_iter().collect(),
+            saved_files: recent_saved_file(&default_output).into_iter().collect(),
             reveal_result: false,
             transcribe_language: "auto".into(),
             zhihu_from: String::new(),
             zhihu_to: String::new(),
             zhihu_all_answers: true,
             zhihu_content: None,
-            output_dir: output_dir(),
+            output_dir: default_output,
             tx,
             rx,
             qr_texture: None,
@@ -423,11 +427,22 @@ impl App {
 
         self.busy = true;
         self.video_progress = Some(0.0);
-        self.status = "正在下载抖音/小红书视频...".into();
+        let format = self.text_format;
+        self.status = if external_video.gallery.is_some() {
+            "正在保存图文图片和文案..."
+        } else {
+            "正在下载抖音/小红书视频..."
+        }
+        .into();
         thread::spawn(move || {
-            let res = external::download(&external_video.url, &tool, &dir, &|p| {
+            let progress = |p| {
                 let _ = tx.send(Msg::VideoProgress(p));
-            });
+            };
+            let res = if external_video.gallery.is_some() {
+                external::download_gallery(&external_video, &dir, format, &progress)
+            } else {
+                external::download(&external_video.url, &tool, &dir, &progress)
+            };
             let _ = tx.send(Msg::ExternalSaved(res));
         });
     }
@@ -649,8 +664,14 @@ impl App {
                     self.video = None;
                     self.tracks.clear();
                     self.streams.clear();
+                    self.status = match &video.gallery {
+                        Some(gallery) => format!(
+                            "已获取图文作品：{} 张图片，可保存图片和文案",
+                            gallery.images.len()
+                        ),
+                        None => "已解析链接，可以下载视频".into(),
+                    };
                     self.external = Some(*video);
-                    self.status = "已解析链接，可以下载视频".into();
                 }
                 Msg::ExternalSaved(res) => match res {
                     Ok(path) => {
@@ -859,7 +880,7 @@ fn recent_saved_file(dir: &std::path::Path) -> Option<PathBuf> {
 }
 
 fn open_saved_file(path: &std::path::Path, select: bool) -> Result<()> {
-    if !path.is_file() {
+    if !path.exists() {
         anyhow::bail!("文件已被移动或删除");
     }
     let mut command = std::process::Command::new("explorer.exe");

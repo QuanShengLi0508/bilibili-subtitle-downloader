@@ -8,6 +8,185 @@ use std::process::Stdio;
 pub struct ExternalVideo {
     pub title: String,
     pub url: String,
+    pub gallery: Option<Gallery>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Gallery {
+    pub description: String,
+    pub author: String,
+    pub images: Vec<String>,
+}
+
+impl Gallery {
+    pub fn from_message(message: &str, expected_url: &str) -> Result<Self> {
+        if message.len() > 2_000_000 {
+            bail!("图文数据过大");
+        }
+        let value: Value = serde_json::from_str(message)?;
+        let source = value["source"].as_str().unwrap_or_default();
+        if !is_douyin(source)
+            || note_id(source) != note_id(expected_url)
+            || note_id(source).is_none()
+        {
+            bail!("当前页面不是所选的抖音图文作品");
+        }
+        let entries = value["images"].as_array().context("没有读取到作品图片")?;
+        if entries.is_empty() || entries.len() > 200 {
+            bail!("未获取完整图片，请等待作品加载");
+        }
+        let mut images = Vec::new();
+        for entry in entries {
+            let url = entry.as_str().context("图片链接无效")?;
+            let parsed = reqwest::Url::parse(url)?;
+            let host = parsed.host_str().unwrap_or_default();
+            if parsed.scheme() != "https"
+                || !(host == "douyinpic.com"
+                    || host.ends_with(".douyinpic.com")
+                    || host.ends_with(".byteimg.com"))
+            {
+                bail!("图片来源不是抖音图片服务器");
+            }
+            if !images.iter().any(|saved| saved == url) {
+                images.push(url.to_owned());
+            }
+        }
+        Ok(Self {
+            description: value["description"].as_str().unwrap_or_default().into(),
+            author: value["author"].as_str().unwrap_or_default().into(),
+            images,
+        })
+    }
+}
+
+fn note_id(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let parts: Vec<_> = parsed.path_segments()?.collect();
+    parts
+        .windows(2)
+        .find(|p| {
+            matches!(p[0], "note" | "slides")
+                && !p[1].is_empty()
+                && p[1].chars().all(|c| c.is_ascii_digit())
+        })
+        .map(|p| p[1].to_owned())
+}
+
+fn gallery_probe(url: &str) -> Result<Option<ExternalVideo>> {
+    let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(20))
+        .user_agent("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36").build()?;
+    let resolved = if note_id(url).is_some() {
+        url.to_owned()
+    } else {
+        client
+            .get(url)
+            .send()?
+            .error_for_status()?
+            .url()
+            .to_string()
+    };
+    let Some(id) = note_id(&resolved) else {
+        return Ok(None);
+    };
+    let canonical = format!("https://www.douyin.com/note/{id}");
+    let preview = tempfile::NamedTempFile::new()?;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let status = command
+        .arg("--douyin-gallery")
+        .arg(&canonical)
+        .arg(preview.path())
+        .status()?;
+    if status.code() == Some(2) {
+        bail!("已取消获取抖音图文");
+    }
+    if !status.success() {
+        bail!("图文窗口读取失败，请重试");
+    }
+    let message = std::fs::read_to_string(preview.path())?;
+    let gallery = Gallery::from_message(&message, &canonical)?;
+    let title = gallery.description.chars().take(70).collect::<String>();
+    Ok(Some(ExternalVideo {
+        title: if title.is_empty() {
+            "抖音图文".into()
+        } else {
+            title
+        },
+        url: canonical,
+        gallery: Some(gallery),
+    }))
+}
+
+pub fn download_gallery(
+    video: &ExternalVideo,
+    output_dir: &Path,
+    format: crate::export::TextFormat,
+    progress: &dyn Fn(f64),
+) -> Result<PathBuf> {
+    use std::io::{Read, Write};
+    let gallery = video.gallery.as_ref().context("不是图文作品")?;
+    std::fs::create_dir_all(output_dir)?;
+    let folder = tempfile::Builder::new()
+        .prefix(&format!(
+            "{}_图文_",
+            crate::bili::sanitize_filename(&video.title)
+        ))
+        .tempdir_in(output_dir)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(45))
+        .build()?;
+    for (index, url) in gallery.images.iter().enumerate() {
+        let response = client
+            .get(url)
+            .header("Referer", "https://www.douyin.com/")
+            .send()?
+            .error_for_status()?;
+        let mut bytes = Vec::new();
+        response.take(50_000_001).read_to_end(&mut bytes)?;
+        if bytes.len() > 50_000_000 {
+            bail!("第 {} 张图片过大", index + 1);
+        }
+        let extension = image_extension(&bytes).context(format!(
+            "第 {} 张图片下载失败，服务器没有返回图片",
+            index + 1
+        ))?;
+        let mut image =
+            std::fs::File::create(folder.path().join(format!("{:02}.{extension}", index + 1)))?;
+        image.write_all(&bytes)?;
+        progress((index + 1) as f64 / (gallery.images.len() + 1) as f64);
+    }
+    let text = folder
+        .path()
+        .join(format!("作品文案.{}", format.extension()));
+    crate::export::save(
+        &text,
+        &video.title,
+        &format!(
+            "{}\n\n作者：{}\n来源：{}",
+            gallery.description, gallery.author, video.url
+        ),
+        format,
+    )?;
+    progress(1.0);
+    Ok(folder.keep())
+}
+
+fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("webp")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else {
+        None
+    }
 }
 
 pub fn find_yt_dlp() -> Option<PathBuf> {
@@ -109,7 +288,34 @@ fn supported_host(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_supported, supported_url};
+    use super::{image_extension, is_supported, supported_url, Gallery};
+
+    #[test]
+    fn gallery_rejects_other_works_and_external_images() {
+        let source = "https://www.douyin.com/note/7690633219121260197";
+        let mut value = serde_json::json!({"source":source,"description":"作品文案","author":"bro", "images":["https://p3-pc-sign.douyinpic.com/image.webp","https://p3-pc-sign.douyinpic.com/image.webp"]});
+        assert_eq!(
+            Gallery::from_message(&value.to_string(), source)
+                .unwrap()
+                .images
+                .len(),
+            1
+        );
+        assert!(
+            Gallery::from_message(&value.to_string(), "https://www.douyin.com/note/123").is_err()
+        );
+        value["images"] = serde_json::json!(["https://douyinpic.com.evil.test/image.webp"]);
+        assert!(Gallery::from_message(&value.to_string(), source).is_err());
+        value["images"] = serde_json::json!([]);
+        assert!(Gallery::from_message(&value.to_string(), source).is_err());
+    }
+
+    #[test]
+    fn image_save_keeps_real_format_and_rejects_error_pages() {
+        assert_eq!(image_extension(b"RIFF0000WEBPdata"), Some("webp"));
+        assert_eq!(image_extension(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
+        assert_eq!(image_extension(b"<html>Forbidden</html>"), None);
+    }
 
     #[test]
     fn extracts_video_url_from_douyin_share_text() {
@@ -148,6 +354,11 @@ mod tests {
 
 pub fn probe(url: &str, tool: &Path) -> Result<ExternalVideo> {
     let url = supported_url(url).context("未找到抖音或小红书视频链接")?;
+    if is_douyin(&url) {
+        if let Some(gallery) = gallery_probe(&url)? {
+            return Ok(gallery);
+        }
+    }
     let mut command = std::process::Command::new(tool);
     configure_command(&mut command, &url);
     let output = command
@@ -168,12 +379,13 @@ pub fn probe(url: &str, tool: &Path) -> Result<ExternalVideo> {
         if error.contains("Fresh cookies") {
             bail!("抖音要求有效的访问 Cookie。请点右上角「抖音登录」，访问或登录后关闭窗口，再重新获取。已有会话时仍失败，说明当前下载工具暂时无法解析该视频。");
         }
-        bail!("解析链接失败: {error}");
+        bail!("{error}");
     }
     let value: Value = serde_json::from_slice(&output.stdout)?;
     Ok(ExternalVideo {
         title: value["title"].as_str().unwrap_or("未命名视频").to_string(),
         url,
+        gallery: None,
     })
 }
 

@@ -40,7 +40,11 @@ impl App {
                 let previous = self.douyin_article_mode;
                 ui.add_enabled_ui(!self.busy, |ui| {
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.douyin_article_mode, false, "下载视频");
+                        ui.selectable_value(
+                            &mut self.douyin_article_mode,
+                            false,
+                            "视频 / 图文下载",
+                        );
                         ui.selectable_value(
                             &mut self.douyin_article_mode,
                             true,
@@ -104,7 +108,11 @@ impl App {
             }
 
             if (!matches!(self.mode, Mode::Video | Mode::Douyin)
-                || (self.mode == Mode::Douyin && self.douyin_article_mode))
+                || (self.mode == Mode::Douyin && self.douyin_article_mode)
+                || self
+                    .external
+                    .as_ref()
+                    .is_some_and(|video| video.gallery.is_some()))
                 && (self.mode != Mode::WebText || self.zhihu_content.is_some())
             {
                 ui.add_space(6.0);
@@ -327,7 +335,7 @@ impl App {
                             "打开并获取长文章"
                         }
                     } else {
-                        "获取抖音视频"
+                        "获取抖音视频 / 图文"
                     }
                 }
                 Mode::Transcribe => "开始识别",
@@ -391,7 +399,9 @@ impl App {
                             Mode::Douyin if self.douyin_article_mode => {
                                 "先获取文字 → 核对全文预览 → 确认导出"
                             }
-                            Mode::Douyin => "保存为视频文件；无法解析时可先点右上角「抖音登录」",
+                            Mode::Douyin => {
+                                "视频保存为 MP4；图文保存配图和文案，需要时会打开抖音网页"
+                            }
                             Mode::Transcribe => "识别完成后保存所选格式与 SRT 字幕，全程在本机处理",
                             Mode::WebText => "先获取 → 选择范围和格式 → 确认导出",
                         },
@@ -422,13 +432,47 @@ impl App {
         {
             card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                section(ui, "视频已就绪", "抖音 / 小红书");
+                let is_gallery = video.gallery.is_some();
+                section(
+                    ui,
+                    if is_gallery {
+                        "图文已就绪"
+                    } else {
+                        "视频已就绪"
+                    },
+                    "抖音 / 小红书",
+                );
                 ui.label(egui::RichText::new(video.title).size(16.0).strong());
                 ui.add_space(6.0);
-                if primary_button(ui, "下载视频", !self.busy) {
+                if let Some(gallery) = &video.gallery {
+                    caption(
+                        ui,
+                        format!(
+                            "{} 张图片 · 文案导出为 {}",
+                            gallery.images.len(),
+                            self.text_format.label()
+                        ),
+                    );
+                }
+                if primary_button(
+                    ui,
+                    if is_gallery {
+                        "保存图片和文案"
+                    } else {
+                        "下载视频"
+                    },
+                    !self.busy,
+                ) {
                     self.spawn_download_external();
                 }
-                caption(ui, "自动选择最佳画质，保存为 MP4");
+                caption(
+                    ui,
+                    if is_gallery {
+                        "按顺序保存到独立文件夹，完成后可直接打开"
+                    } else {
+                        "自动选择最佳画质，保存为 MP4"
+                    },
+                );
             });
             ui.add_space(6.0);
             return;
@@ -594,7 +638,15 @@ impl App {
                                 .truncate(),
                         )
                         .on_hover_text(path.display().to_string());
-                        if secondary_button(ui, "打开文件", !self.busy) {
+                        if secondary_button(
+                            ui,
+                            if path.is_dir() {
+                                "打开文件夹"
+                            } else {
+                                "打开文件"
+                            },
+                            !self.busy,
+                        ) {
                             if let Err(error) = open_saved_file(&path, false) {
                                 self.status = format!("打开失败: {error}");
                             }
