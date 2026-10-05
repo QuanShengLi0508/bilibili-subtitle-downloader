@@ -46,6 +46,8 @@ enum Msg {
     ZhihuLoaded(Result<zhihu::ZhihuContent>),
     ZhihuLoginFinished(Result<bool>),
     DouyinLoginFinished(Result<bool>),
+    DouyinArticleLoaded(Result<Option<crate::douyin_article::Article>>),
+    DouyinArticleSaved(Result<PathBuf>),
     QrReady {
         w: usize,
         pixels: Vec<egui::Color32>,
@@ -69,6 +71,9 @@ struct App {
     selected_stream: usize,
     video_progress: Option<f64>,
     external: Option<external::ExternalVideo>,
+    douyin_article_mode: bool,
+    douyin_article: Option<Arc<crate::douyin_article::Article>>,
+    douyin_preview_open: bool,
     media_file: Option<PathBuf>,
     text_format: TextFormat,
     saved_files: Vec<PathBuf>,
@@ -88,6 +93,48 @@ struct App {
 }
 
 impl App {
+    fn spawn_read_douyin_article(&mut self) {
+        if !external::is_douyin(&self.link) {
+            self.status = "请粘贴抖音长文章分享链接".into();
+            return;
+        }
+        self.douyin_article = None;
+        self.busy = true;
+        self.status = "请在文章窗口阅读全文，点击右下角获取正文，再回到拾文确认导出".into();
+        let input = self.link.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| -> Result<Option<crate::douyin_article::Article>> {
+                let response = tempfile::NamedTempFile::new()?;
+                let status = std::process::Command::new(std::env::current_exe()?)
+                    .arg("--douyin-article")
+                    .arg(&input)
+                    .arg(response.path())
+                    .status()?;
+                match status.code() {
+                    Some(0) => Ok(Some(crate::douyin_article::Article::from_message(
+                        &std::fs::read_to_string(response.path())?,
+                    )?)),
+                    Some(2) => Ok(None),
+                    _ => anyhow::bail!("文章窗口未能完成获取，请重试"),
+                }
+            })();
+            let _ = tx.send(Msg::DouyinArticleLoaded(result));
+        });
+    }
+    fn spawn_export_douyin_article(&mut self) {
+        let Some(article) = self.douyin_article.clone() else {
+            return;
+        };
+        let dir = self.output_dir.clone();
+        let format = self.text_format;
+        self.busy = true;
+        self.status = "正在导出抖音长文章…".into();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::DouyinArticleSaved(article.export(&dir, format)));
+        });
+    }
     fn spawn_douyin_login(&mut self) {
         self.busy = true;
         self.external = None;
@@ -152,6 +199,9 @@ impl App {
             selected_stream: 0,
             video_progress: None,
             external: None,
+            douyin_article_mode: false,
+            douyin_article: None,
+            douyin_preview_open: false,
             media_file: None,
             text_format: TextFormat::Txt,
             saved_files: recent_saved_file(&output_dir()).into_iter().collect(),
@@ -564,6 +614,29 @@ impl App {
                 self.busy = false;
             }
             match msg {
+                Msg::DouyinArticleLoaded(result) => match result {
+                    Ok(Some(article)) => {
+                        self.status = format!(
+                            "已获取抖音文字 {} 字，请核对正文与末尾后确认导出{}",
+                            article.body.chars().count(),
+                            if article.selected {
+                                "（当前为选中文字）"
+                            } else {
+                                ""
+                            }
+                        );
+                        self.douyin_article = Some(Arc::new(article));
+                    }
+                    Ok(None) => self.status = "已取消获取抖音长文章".into(),
+                    Err(error) => self.status = format!("抖音文章获取失败：{error:#}"),
+                },
+                Msg::DouyinArticleSaved(result) => match result {
+                    Ok(path) => {
+                        self.saved_files = vec![path.clone()];
+                        self.status = format!("已保存: {}", path.display());
+                    }
+                    Err(error) => self.status = format!("抖音文章导出失败：{error:#}"),
+                },
                 Msg::DouyinLoginFinished(result) => {
                     self.busy = false;
                     self.status = match result {

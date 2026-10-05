@@ -461,6 +461,19 @@ impl App {
                 let _ = bottom;
             });
         self.login_window(ctx);
+        if let Some(article) = self.douyin_article.clone() {
+            egui::Window::new("抖音长文章 · 全部文字预览")
+                .open(&mut self.douyin_preview_open)
+                .default_width(640.0)
+                .show(ctx, |ui| {
+                    ui.label(&article.title);
+                    egui::ScrollArea::vertical()
+                        .max_height((ctx.screen_rect().height() - 180.0).max(150.0))
+                        .show(ui, |ui| {
+                            ui.label(&article.body);
+                        });
+                });
+        }
     }
 
     pub(super) fn file_drop_zone(&mut self, ui: &mut egui::Ui) {

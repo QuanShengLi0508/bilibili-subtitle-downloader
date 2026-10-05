@@ -33,6 +33,27 @@ impl App {
     pub(super) fn source_card(&mut self, ui: &mut egui::Ui) {
         egui::Frame::default().show(ui, |ui| {
             ui.set_width(ui.available_width());
+            if self.mode == Mode::Douyin && self.douyin_article_mode {
+                ui.spacing_mut().item_spacing.y = 3.0;
+            }
+            if self.mode == Mode::Douyin {
+                let previous = self.douyin_article_mode;
+                ui.add_enabled_ui(!self.busy, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.douyin_article_mode, false, "下载视频");
+                        ui.selectable_value(
+                            &mut self.douyin_article_mode,
+                            true,
+                            "长文章 · 导出文字",
+                        );
+                    });
+                });
+                if previous != self.douyin_article_mode {
+                    self.external = None;
+                    self.douyin_article = None;
+                    self.status = "已切换抖音内容类型，请重新获取".into();
+                }
+            }
             if self.mode == Mode::Transcribe {
                 self.file_drop_zone(ui);
             } else {
@@ -60,6 +81,7 @@ impl App {
                         .margin(egui::vec2(10.0, 8.0)),
                 );
                 if response.changed() {
+                    self.douyin_article = None;
                     self.zhihu_content = None;
                     self.video = None;
                     self.external = None;
@@ -71,7 +93,9 @@ impl App {
                     && !self.busy
                     && !self.link.trim().is_empty()
                 {
-                    if self.mode == Mode::WebText {
+                    if self.mode == Mode::Douyin && self.douyin_article_mode {
+                        self.spawn_read_douyin_article();
+                    } else if self.mode == Mode::WebText {
                         self.spawn_fetch_zhihu();
                     } else {
                         self.spawn_fetch_video();
@@ -79,7 +103,8 @@ impl App {
                 }
             }
 
-            if !matches!(self.mode, Mode::Video | Mode::Douyin)
+            if (!matches!(self.mode, Mode::Video | Mode::Douyin)
+                || (self.mode == Mode::Douyin && self.douyin_article_mode))
                 && (self.mode != Mode::WebText || self.zhihu_content.is_some())
             {
                 ui.add_space(6.0);
@@ -216,6 +241,75 @@ impl App {
             }
 
             ui.add_space(6.0);
+            if self.mode == Mode::Douyin && self.douyin_article_mode {
+                if let Some(article) = self.douyin_article.clone() {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "{} · {} 字",
+                                article.title,
+                                article.body.chars().count()
+                            ))
+                            .strong(),
+                        )
+                        .truncate(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "开头：{}",
+                                article
+                                    .body
+                                    .chars()
+                                    .take(90)
+                                    .collect::<String>()
+                                    .replace('\n', " ")
+                            ))
+                            .size(12.0)
+                            .color(MUTED),
+                        )
+                        .truncate(),
+                    );
+                    let tail = article
+                        .body
+                        .chars()
+                        .rev()
+                        .take(90)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<String>();
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("末尾：{}", tail.replace('\n', " ")))
+                                .size(12.0)
+                                .color(MUTED),
+                        )
+                        .truncate(),
+                    );
+                    ui.horizontal(|ui| {
+                        if secondary_button(ui, "重新获取正文", !self.busy) {
+                            self.spawn_read_douyin_article();
+                        }
+                        if secondary_button(ui, "查看全部文字", true) {
+                            self.douyin_preview_open = true;
+                        }
+                    });
+                    caption(
+                        ui,
+                        if article.selected {
+                            "这是选中文字，请核对范围后导出。"
+                        } else {
+                            "请与网页核对正文是否完整；图片中的文字暂不支持。"
+                        },
+                    );
+                } else {
+                    caption(
+                        ui,
+                        "在官方页面展开文章后获取文字；获取后先预览，再确认导出。",
+                    );
+                }
+            }
             let enabled = !self.busy
                 && if self.mode == Mode::Transcribe {
                     self.media_file.is_some() && self.ffmpeg_ok
@@ -225,7 +319,17 @@ impl App {
             let action = match self.mode {
                 Mode::Subtitle => "获取字幕",
                 Mode::Video => "获取视频",
-                Mode::Douyin => "获取抖音视频",
+                Mode::Douyin => {
+                    if self.douyin_article_mode {
+                        if self.douyin_article.is_some() {
+                            "确认导出文章"
+                        } else {
+                            "打开并获取长文章"
+                        }
+                    } else {
+                        "获取抖音视频"
+                    }
+                }
                 Mode::Transcribe => "开始识别",
                 Mode::WebText => {
                     if self.zhihu_content.is_some() {
@@ -243,6 +347,13 @@ impl App {
                 super::reference::Symbol::Play,
             ) {
                 match self.mode {
+                    Mode::Douyin if self.douyin_article_mode => {
+                        if self.douyin_article.is_some() {
+                            self.spawn_export_douyin_article();
+                        } else {
+                            self.spawn_read_douyin_article();
+                        }
+                    }
                     Mode::Transcribe => self.spawn_transcribe(),
                     Mode::WebText => {
                         if self.zhihu_content.is_some() {
@@ -255,7 +366,11 @@ impl App {
                 }
             }
             // Keep platform errors next to the action, even if the footer is off screen.
-            if self.status.contains("抖音") || self.status.starts_with("解析链接失败") {
+            if (self.status.contains("抖音") || self.status.starts_with("解析链接失败"))
+                && !(self.mode == Mode::Douyin
+                    && self.douyin_article_mode
+                    && self.douyin_article.is_some())
+            {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(&self.status).size(12.0).color(INK));
                 if self.mode == Mode::Subtitle && external::is_supported(&self.link) {
@@ -273,6 +388,9 @@ impl App {
                         match self.mode {
                             Mode::Subtitle => "AI 字幕需要登录后获取，支持多种文档格式",
                             Mode::Video => "高画质视频需要登录 B站，输出为 MP4",
+                            Mode::Douyin if self.douyin_article_mode => {
+                                "先获取文字 → 核对全文预览 → 确认导出"
+                            }
                             Mode::Douyin => "保存为视频文件；无法解析时可先点右上角「抖音登录」",
                             Mode::Transcribe => "识别完成后保存所选格式与 SRT 字幕，全程在本机处理",
                             Mode::WebText => "先获取 → 选择范围和格式 → 确认导出",
@@ -294,7 +412,7 @@ impl App {
         if matches!(self.mode, Mode::Transcribe | Mode::WebText) {
             return;
         }
-        if self.mode == Mode::Douyin && self.external.is_none() {
+        if self.mode == Mode::Douyin && (self.douyin_article_mode || self.external.is_none()) {
             return;
         }
         if let Some(video) = self
@@ -545,6 +663,7 @@ mod tests {
                 Mode::WebText,
                 Mode::Transcribe,
                 Mode::Douyin,
+                Mode::Douyin,
             ]
             .into_iter()
             .enumerate()
@@ -554,6 +673,16 @@ mod tests {
                 apply_style(&ctx);
                 let mut app = App::new(&ctx);
                 app.mode = mode;
+                if index == 7 {
+                    app.douyin_article_mode = true;
+                    app.douyin_article = Some(Arc::new(crate::douyin_article::Article {
+                        title: "抖音长文章预览".into(),
+                        body: "这是保留分段的文章正文，用于检查预览与导出功能。\n".repeat(100),
+                        source: "https://www.douyin.com/note/123".into(),
+                        selected: false,
+                    }));
+                    app.status = "已获取抖音文字，请核对正文与末尾后确认导出".into();
+                }
                 if index == 4 {
                     app.status = "已保存: 界面验证文件.txt".into();
                     app.reveal_result = true;
