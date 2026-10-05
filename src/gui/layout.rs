@@ -42,6 +42,7 @@ impl App {
                     match self.mode {
                         Mode::Subtitle => "支持 B站视频链接、短链接或 BV / AV 号",
                         Mode::Video => "支持 B站、抖音、小红书链接",
+                        Mode::Douyin => "支持抖音短链接、精选链接和整段分享文字",
                         _ => "支持知乎回答、专栏和问题链接",
                     },
                 );
@@ -50,6 +51,8 @@ impl App {
                     egui::TextEdit::singleline(&mut self.link)
                         .hint_text(if self.mode == Mode::WebText {
                             "在这里粘贴知乎链接…"
+                        } else if self.mode == Mode::Douyin {
+                            "粘贴抖音视频链接或整段分享文字…"
                         } else {
                             "在这里粘贴视频链接…"
                         })
@@ -76,7 +79,7 @@ impl App {
                 }
             }
 
-            if self.mode != Mode::Video
+            if !matches!(self.mode, Mode::Video | Mode::Douyin)
                 && (self.mode != Mode::WebText || self.zhihu_content.is_some())
             {
                 ui.add_space(6.0);
@@ -222,6 +225,7 @@ impl App {
             let action = match self.mode {
                 Mode::Subtitle => "获取字幕",
                 Mode::Video => "获取视频",
+                Mode::Douyin => "获取抖音视频",
                 Mode::Transcribe => "开始识别",
                 Mode::WebText => {
                     if self.zhihu_content.is_some() {
@@ -250,6 +254,17 @@ impl App {
                     _ => self.spawn_fetch_video(),
                 }
             }
+            // Keep platform errors next to the action, even if the footer is off screen.
+            if self.status.contains("抖音") || self.status.starts_with("解析链接失败") {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(&self.status).size(12.0).color(INK));
+                if self.mode == Mode::Subtitle && external::is_supported(&self.link) {
+                    if secondary_button(ui, "切换到抖音下载", !self.busy) {
+                        self.mode = Mode::Douyin;
+                        self.status = "已切换到抖音下载，点击「获取抖音视频」尝试解析".into();
+                    }
+                }
+            }
             if ui.ctx().screen_rect().height() >= 680.0 {
                 ui.add_space(5.0);
                 ui.vertical_centered(|ui| {
@@ -258,6 +273,7 @@ impl App {
                         match self.mode {
                             Mode::Subtitle => "AI 字幕需要登录后获取，支持多种文档格式",
                             Mode::Video => "高画质视频需要登录 B站，输出为 MP4",
+                            Mode::Douyin => "保存为视频文件；无法解析时可先点右上角「抖音登录」",
                             Mode::Transcribe => "识别完成后保存所选格式与 SRT 字幕，全程在本机处理",
                             Mode::WebText => "先获取 → 选择范围和格式 → 确认导出",
                         },
@@ -278,7 +294,14 @@ impl App {
         if matches!(self.mode, Mode::Transcribe | Mode::WebText) {
             return;
         }
-        if let Some(video) = self.external.clone().filter(|_| self.mode == Mode::Video) {
+        if self.mode == Mode::Douyin && self.external.is_none() {
+            return;
+        }
+        if let Some(video) = self
+            .external
+            .clone()
+            .filter(|_| matches!(self.mode, Mode::Video | Mode::Douyin))
+        {
             card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 section(ui, "视频已就绪", "抖音 / 小红书");
@@ -521,6 +544,7 @@ mod tests {
                 Mode::WebText,
                 Mode::WebText,
                 Mode::Transcribe,
+                Mode::Douyin,
             ]
             .into_iter()
             .enumerate()

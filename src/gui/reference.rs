@@ -240,7 +240,22 @@ impl App {
                     ui.add_space((ui.available_width() - 150.0).max(0.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.vertical(|ui| {
-                            if self.mode == Mode::WebText {
+                            if self.mode == Mode::Douyin {
+                                if secondary_button(ui, "抖音登录", !self.busy) {
+                                    self.spawn_douyin_login();
+                                }
+                                ui.label(
+                                    egui::RichText::new(
+                                        if external::douyin_cookie_path().is_file() {
+                                            "已保存访问会话"
+                                        } else {
+                                            "无法解析时可尝试登录"
+                                        },
+                                    )
+                                    .size(11.0)
+                                    .color(MUTED),
+                                );
+                            } else if self.mode == Mode::WebText {
                                 if secondary_button(ui, "知乎登录", !self.busy) {
                                     self.spawn_zhihu_login();
                                 }
@@ -277,10 +292,11 @@ impl App {
                 });
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0;
+                    let width = (ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0;
                     for (mode, label, compact, symbol) in [
                         (Mode::Subtitle, "下载字幕", "下载字幕", Symbol::Document),
                         (Mode::Video, "下载视频", "下载视频", Symbol::Play),
+                        (Mode::Douyin, "抖音下载", "抖音下载", Symbol::Play),
                         (
                             Mode::Transcribe,
                             "音频/视频转文字",
@@ -600,6 +616,22 @@ fn supported_media(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn douyin_tab_rejects_other_sites_and_explains_subtitle_mismatch() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx);
+        app.mode = Mode::Douyin;
+        app.link = "https://www.bilibili.com/video/BV1example".into();
+        app.spawn_fetch_video();
+        assert!(!app.busy);
+        assert!(app.status.contains("请粘贴抖音"));
+        app.mode = Mode::Subtitle;
+        app.link = "https://www.douyin.com/jingxuan?modal_id=7673787196373060900".into();
+        app.spawn_fetch_video();
+        assert!(!app.busy);
+        assert!(app.status.contains("抖音下载"));
+    }
 
     #[test]
     fn dropped_media_is_selected_and_busy_operations_are_preserved() {

@@ -30,6 +30,64 @@ pub fn find_yt_dlp() -> Option<PathBuf> {
 }
 
 pub fn is_supported(url: &str) -> bool {
+    supported_url(url).is_some()
+}
+
+pub fn is_douyin(input: &str) -> bool {
+    supported_url(input)
+        .and_then(|url| reqwest::Url::parse(&url).ok())
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            ["douyin.com", "iesdouyin.com"]
+                .iter()
+                .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+        })
+}
+
+pub fn douyin_cookie_path() -> PathBuf {
+    crate::zhihu_login::session_directory().join("douyin-cookies.txt")
+}
+
+fn configure_command(command: &mut std::process::Command, url: &str) {
+    command.env("PYTHONIOENCODING", "utf-8");
+    if is_douyin(url) && douyin_cookie_path().is_file() {
+        command.arg("--cookies").arg(douyin_cookie_path());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+}
+
+/// Douyin's copy/share action includes a caption around the actual link.
+pub fn supported_url(input: &str) -> Option<String> {
+    for part in input.split(|c: char| c.is_whitespace() || "，。；！【】《》“”".contains(c))
+    {
+        let Some(start) = part.find("https://").or_else(|| part.find("http://")) else {
+            continue;
+        };
+        let candidate =
+            part[start..].trim_end_matches([')', ']', '}', ',', '.', ';', '!', '\'', '"']);
+        if supported_host(candidate) {
+            let parsed = reqwest::Url::parse(candidate).ok()?;
+            if parsed
+                .host_str()
+                .is_some_and(|host| host == "douyin.com" || host.ends_with(".douyin.com"))
+            {
+                if let Some((_, id)) = parsed.query_pairs().find(|(key, _)| key == "modal_id") {
+                    if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
+                        return Some(format!("https://www.douyin.com/video/{id}"));
+                    }
+                }
+            }
+            return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
+fn supported_host(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url.trim()) else {
         return false;
     };
@@ -51,7 +109,22 @@ pub fn is_supported(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_supported;
+    use super::{is_supported, supported_url};
+
+    #[test]
+    fn extracts_video_url_from_douyin_share_text() {
+        assert_eq!(
+            supported_url("3.14 复制打开抖音，看看这个视频 https://v.douyin.com/abc123/ 10/05"),
+            Some("https://v.douyin.com/abc123/".into())
+        );
+        assert_eq!(
+            supported_url("视频：https://www.douyin.com/video/123。复制此链接"),
+            Some("https://www.douyin.com/video/123".into())
+        );
+        assert!(
+            supported_url("https://evil.test/?redirect=https://www.douyin.com/video/123").is_none()
+        );
+    }
 
     #[test]
     fn only_supported_hosts_are_external_videos() {
@@ -60,21 +133,47 @@ mod tests {
         assert!(!is_supported("https://douyin.com.evil.test/video/123"));
         assert!(!is_supported("https://evil.test/?q=douyin.com"));
     }
+
+    #[test]
+    fn normalizes_douyin_selection_links() {
+        assert_eq!(
+            supported_url("https://www.douyin.com/jingxuan?modal_id=7673787196373060900"),
+            Some("https://www.douyin.com/video/7673787196373060900".into())
+        );
+        assert!(!is_supported(
+            "https://douyin.com.evil.test/jingxuan?modal_id=123"
+        ));
+    }
 }
 
 pub fn probe(url: &str, tool: &Path) -> Result<ExternalVideo> {
-    let output = std::process::Command::new(tool)
-        .args(["--dump-single-json", "--no-warnings", "--no-playlist"])
-        .arg(url)
+    let url = supported_url(url).context("未找到抖音或小红书视频链接")?;
+    let mut command = std::process::Command::new(tool);
+    configure_command(&mut command, &url);
+    let output = command
+        .args([
+            "--dump-single-json",
+            "--no-warnings",
+            "--no-playlist",
+            "--socket-timeout",
+            "15",
+            "--retries",
+            "1",
+        ])
+        .arg(&url)
         .output()
         .context("启动 yt-dlp 失败")?;
     if !output.status.success() {
-        bail!("解析链接失败: {}", String::from_utf8_lossy(&output.stderr));
+        let error = String::from_utf8_lossy(&output.stderr);
+        if error.contains("Fresh cookies") {
+            bail!("抖音要求有效的访问 Cookie。请点右上角「抖音登录」，访问或登录后关闭窗口，再重新获取。已有会话时仍失败，说明当前下载工具暂时无法解析该视频。");
+        }
+        bail!("解析链接失败: {error}");
     }
     let value: Value = serde_json::from_slice(&output.stdout)?;
     Ok(ExternalVideo {
         title: value["title"].as_str().unwrap_or("未命名视频").to_string(),
-        url: url.to_string(),
+        url,
     })
 }
 
@@ -85,7 +184,9 @@ pub fn download(
     progress: &dyn Fn(f64),
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(output_dir)?;
-    let mut child = std::process::Command::new(tool)
+    let mut command = std::process::Command::new(tool);
+    configure_command(&mut command, url);
+    let mut child = command
         .args([
             "--newline",
             "--no-playlist",

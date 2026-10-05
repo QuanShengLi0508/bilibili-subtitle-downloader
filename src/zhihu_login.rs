@@ -61,6 +61,16 @@ pub fn request_identity(cookies: &str) -> (String, String) {
 
 #[cfg(windows)]
 pub fn run_window() -> Result<bool> {
+    run_site(false)
+}
+
+#[cfg(windows)]
+pub fn run_douyin_window() -> Result<bool> {
+    run_site(true)
+}
+
+#[cfg(windows)]
+fn run_site(douyin: bool) -> Result<bool> {
     use winit::{
         application::ApplicationHandler,
         event::WindowEvent,
@@ -71,6 +81,7 @@ pub fn run_window() -> Result<bool> {
         webview: Option<wry::WebView>,
         window: Option<Window>,
         result: Option<Result<bool>>,
+        douyin: bool,
     }
     impl ApplicationHandler for Login {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -78,20 +89,30 @@ pub fn run_window() -> Result<bool> {
                 return;
             }
             let setup = (|| -> Result<(Window, wry::WebView)> {
-                let directory = session_directory().join("zhihu-webview");
+                let directory = session_directory().join(if self.douyin {
+                    "douyin-webview"
+                } else {
+                    "zhihu-webview"
+                });
                 std::fs::create_dir_all(&directory)?;
                 let window = event_loop.create_window(
                     Window::default_attributes()
-                        .with_title("拾文 · 知乎登录（登录完成后关闭此窗口）")
+                        .with_title(if self.douyin {
+                            "拾文 · 抖音登录（访问或登录后关闭此窗口）"
+                        } else {
+                            "拾文 · 知乎登录（登录完成后关闭此窗口）"
+                        })
                         .with_inner_size(winit::dpi::LogicalSize::new(960.0, 760.0)),
                 )?;
                 let mut context = wry::WebContext::new(Some(directory));
                 let webview = wry::WebViewBuilder::new_with_web_context(&mut context)
-                    .with_url("https://www.zhihu.com/signin")
+                    .with_url(if self.douyin {
+                        "https://www.douyin.com/"
+                    } else {
+                        "https://www.zhihu.com/signin"
+                    })
                     .build(&window)
-                    .context(
-                        "无法打开知乎登录窗口，请安装 Microsoft Edge WebView2 Runtime 后重试",
-                    )?;
+                    .context("无法打开登录窗口，请安装 Microsoft Edge WebView2 Runtime 后重试")?;
                 Ok((window, webview))
             })();
             match setup {
@@ -109,6 +130,59 @@ pub fn run_window() -> Result<bool> {
             if matches!(event, WindowEvent::CloseRequested) {
                 self.result = Some((|| -> Result<bool> {
                     let webview = self.webview.as_ref().context("登录窗口尚未加载")?;
+                    if self.douyin {
+                        let mut cookies = Vec::new();
+                        for url in ["https://www.douyin.com/", "https://www.iesdouyin.com/"] {
+                            cookies.extend(webview.cookies_for_url(url)?);
+                        }
+                        if cookies.is_empty() {
+                            return Ok(false);
+                        }
+                        let mut lines = std::collections::BTreeSet::new();
+                        for cookie in cookies {
+                            let domain = cookie.domain().unwrap_or("www.douyin.com");
+                            let expiry = cookie
+                                .expires_datetime()
+                                .map(|time| time.unix_timestamp())
+                                .unwrap_or(0);
+                            let parts = [
+                                domain.to_owned(),
+                                if domain.starts_with('.') {
+                                    "TRUE"
+                                } else {
+                                    "FALSE"
+                                }
+                                .into(),
+                                cookie.path().unwrap_or("/").into(),
+                                if cookie.secure().unwrap_or(false) {
+                                    "TRUE"
+                                } else {
+                                    "FALSE"
+                                }
+                                .into(),
+                                expiry.to_string(),
+                                cookie.name().into(),
+                                cookie.value().into(),
+                            ];
+                            if parts.iter().any(|part| part.contains(['\t', '\r', '\n'])) {
+                                continue;
+                            }
+                            let line = parts.join("\t");
+                            lines.insert(if cookie.http_only().unwrap_or(false) {
+                                format!("#HttpOnly_{line}")
+                            } else {
+                                line
+                            });
+                        }
+                        std::fs::write(
+                            crate::external::douyin_cookie_path(),
+                            format!(
+                                "# Netscape HTTP Cookie File\n{}\n",
+                                lines.into_iter().collect::<Vec<_>>().join("\n")
+                            ),
+                        )?;
+                        return Ok(true);
+                    }
                     let mut cookies = BTreeMap::new();
                     for url in ["https://www.zhihu.com/", "https://zhuanlan.zhihu.com/"] {
                         for cookie in webview.cookies_for_url(url)? {
@@ -133,6 +207,7 @@ pub fn run_window() -> Result<bool> {
         window: None,
         webview: None,
         result: None,
+        douyin,
     };
     event_loop.run_app(&mut login)?;
     login.result.unwrap_or(Ok(false))
@@ -141,6 +216,11 @@ pub fn run_window() -> Result<bool> {
 #[cfg(not(windows))]
 pub fn run_window() -> Result<bool> {
     anyhow::bail!("本次知乎登录窗口仅支持 Windows")
+}
+
+#[cfg(not(windows))]
+pub fn run_douyin_window() -> Result<bool> {
+    anyhow::bail!("抖音登录窗口仅支持 Windows")
 }
 
 #[cfg(test)]

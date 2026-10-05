@@ -11,13 +11,22 @@ mod zhihu;
 mod zhihu_login;
 
 fn main() -> eframe::Result<()> {
-    if std::env::args().any(|arg| arg == "--zhihu-login") {
-        let code = match zhihu_login::run_window() {
+    let douyin_login = std::env::args().any(|arg| arg == "--douyin-login");
+    if douyin_login || std::env::args().any(|arg| arg == "--zhihu-login") {
+        let code = match if douyin_login {
+            zhihu_login::run_douyin_window()
+        } else {
+            zhihu_login::run_window()
+        } {
             Ok(true) => 0,
             Ok(false) => 2,
             Err(error) => {
                 rfd::MessageDialog::new()
-                    .set_title("知乎登录")
+                    .set_title(if douyin_login {
+                        "抖音登录"
+                    } else {
+                        "知乎登录"
+                    })
                     .set_description(format!("{error:#}"))
                     .set_level(rfd::MessageLevel::Error)
                     .show();

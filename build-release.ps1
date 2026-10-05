@@ -11,7 +11,14 @@ try {
     $builtExe = Join-Path $env:CARGO_TARGET_DIR 'release\bili-subtitle-downloader.exe'
     $builtCli = Join-Path $env:CARGO_TARGET_DIR 'release\bili-subtitle-cli.exe'
     $rootExe = Join-Path $projectRoot '拾文.exe'
-    Copy-Item -LiteralPath $builtExe -Destination $rootExe -Force
+    try {
+        Copy-Item -LiteralPath $builtExe -Destination $rootExe -Force -ErrorAction Stop
+    } catch {
+        # A running Windows executable can be renamed without interrupting the app.
+        $previousExe = Join-Path $projectRoot "拾文.previous.$PID.exe"
+        Move-Item -LiteralPath $rootExe -Destination $previousExe -ErrorAction Stop
+        Copy-Item -LiteralPath $builtExe -Destination $rootExe -Force
+    }
     Copy-Item -LiteralPath $builtCli -Destination (Join-Path $projectRoot 'bili-subtitle-cli.exe') -Force
 
     $packageDir = Join-Path $projectRoot 'release-package'

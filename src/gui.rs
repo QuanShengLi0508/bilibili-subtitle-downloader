@@ -22,6 +22,7 @@ enum Mode {
     Video,
     Transcribe,
     WebText,
+    Douyin,
 }
 
 enum Msg {
@@ -44,6 +45,7 @@ enum Msg {
     ZhihuSaved(Result<zhihu::ZhihuExport>),
     ZhihuLoaded(Result<zhihu::ZhihuContent>),
     ZhihuLoginFinished(Result<bool>),
+    DouyinLoginFinished(Result<bool>),
     QrReady {
         w: usize,
         pixels: Vec<egui::Color32>,
@@ -86,6 +88,25 @@ struct App {
 }
 
 impl App {
+    fn spawn_douyin_login(&mut self) {
+        self.busy = true;
+        self.external = None;
+        self.status = "请在抖音官方窗口访问或登录，完成后关闭窗口，再重新获取视频".into();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| -> Result<bool> {
+                let status = std::process::Command::new(std::env::current_exe()?)
+                    .arg("--douyin-login")
+                    .status()?;
+                match status.code() {
+                    Some(0) => Ok(true),
+                    Some(2) => Ok(false),
+                    _ => anyhow::bail!("抖音登录窗口未能完成，请重试"),
+                }
+            })();
+            let _ = tx.send(Msg::DouyinLoginFinished(result));
+        });
+    }
     fn spawn_zhihu_login(&mut self) {
         self.busy = true;
         self.zhihu_content = None;
@@ -163,10 +184,15 @@ impl App {
         self.video_progress = None;
         self.busy = true;
 
+        if self.mode == Mode::Douyin && !external::is_douyin(&input) {
+            self.busy = false;
+            self.status = "请粘贴抖音视频链接、精选链接或分享文字".into();
+            return;
+        }
         if external::is_supported(&input) {
-            if self.mode != Mode::Video {
+            if !matches!(self.mode, Mode::Video | Mode::Douyin) {
                 self.busy = false;
-                self.status = "抖音/小红书请先切换到「下载视频」".into();
+                self.status = "抖音请切换到「抖音下载」；小红书请切换到「下载视频」。抖音文字可下载后在本机转写。".into();
                 return;
             }
             let Some(tool) = external::find_yt_dlp() else {
@@ -538,6 +564,14 @@ impl App {
                 self.busy = false;
             }
             match msg {
+                Msg::DouyinLoginFinished(result) => {
+                    self.busy = false;
+                    self.status = match result {
+                        Ok(true) => "抖音访问会话已保存，请重新获取视频".into(),
+                        Ok(false) => "未获取抖音访问会话，请重试".into(),
+                        Err(error) => format!("抖音登录失败：{error:#}"),
+                    };
+                }
                 Msg::ExternalLoaded(video) => {
                     self.video = None;
                     self.tracks.clear();
@@ -853,7 +887,7 @@ fn apply_style(ctx: &egui::Context) {
 pub fn run() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions::default();
     options.viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1040.0, 840.0])
+        .with_inner_size([1040.0, 700.0])
         .with_min_inner_size([780.0, 600.0])
         .with_icon(eframe::icon_data::from_png_bytes(LOGO_PNG).expect("Invalid application icon"))
         .with_title("拾文");
