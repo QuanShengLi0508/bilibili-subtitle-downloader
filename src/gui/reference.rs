@@ -240,7 +240,24 @@ impl App {
                     ui.add_space((ui.available_width() - 150.0).max(0.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.vertical(|ui| {
-                            if self.mode == Mode::Douyin {
+                            if self.mode == Mode::Youtube {
+                                if secondary_button(ui, "导入登录状态", !self.busy) {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("登录状态", &["txt"])
+                                        .pick_file()
+                                    {
+                                        self.status = match crate::youtube::import_cookies(&path) {
+                                            Ok(()) => "YouTube 登录状态已导入，请重新获取".into(),
+                                            Err(error) => format!("{error:#}"),
+                                        };
+                                    }
+                                }
+                                ui.label(
+                                    egui::RichText::new("需能访问 YouTube")
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
+                            } else if self.mode == Mode::Douyin {
                                 if secondary_button(ui, "抖音登录", !self.busy) {
                                     self.spawn_douyin_login();
                                 }
@@ -301,15 +318,16 @@ impl App {
                 });
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0;
+                    let width = (ui.available_width() - 5.0 * ui.spacing().item_spacing.x) / 6.0;
                     for (mode, label, compact, symbol) in [
                         (Mode::Subtitle, "哔哩哔哩", "哔哩哔哩", Symbol::Play),
                         (Mode::Douyin, "抖音", "抖音", Symbol::Play),
                         (Mode::Xhs, "小红书", "小红书", Symbol::Document),
+                        (Mode::Youtube, "YouTube", "YouTube", Symbol::Play),
                         (
                             Mode::Transcribe,
                             "音频/视频转文字",
-                            "音视频转写",
+                            "本地转写",
                             Symbol::Wave,
                         ),
                         (Mode::WebText, "知乎", "知乎", Symbol::Document),
@@ -355,7 +373,13 @@ impl App {
                                 egui::pos2(rect.left() + 43.0, rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 label,
-                                egui::FontId::proportional(if width < 190.0 { 14.0 } else { 16.0 }),
+                                egui::FontId::proportional(if width < 150.0 {
+                                    12.0
+                                } else if width < 190.0 {
+                                    14.0
+                                } else {
+                                    16.0
+                                }),
                                 color,
                             );
                             if response.clicked()
@@ -364,6 +388,7 @@ impl App {
                             {
                                 if !selected {
                                     self.mode = mode;
+                                    self.youtube = None;
                                     self.external = None;
                                     self.video = None;
                                     self.douyin_article = None;

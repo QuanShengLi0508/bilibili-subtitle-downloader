@@ -89,6 +89,10 @@ impl App {
                             self.douyin_article_mode = true;
                         }
                     }
+                    Mode::Youtube => {
+                        ui.selectable_value(&mut self.youtube_subtitles, false, "下载视频");
+                        ui.selectable_value(&mut self.youtube_subtitles, true, "提取字幕");
+                    }
                     Mode::Xhs => {
                         ui.selectable_value(&mut self.xhs_video, false, "图文");
                         ui.selectable_value(&mut self.xhs_video, true, "视频");
@@ -122,6 +126,7 @@ impl App {
                     ui,
                     "粘贴内容链接",
                     match self.mode {
+                        Mode::Youtube => "支持 YouTube 视频、Shorts 和 youtu.be 短链接",
                         Mode::BiliText => "支持 B站 opus 图文、动态和 cv 专栏链接",
                         Mode::Subtitle => "支持 B站视频链接、短链接或 BV / AV 号",
                         Mode::Video => "支持 B站、抖音、小红书链接",
@@ -133,7 +138,9 @@ impl App {
                 let response = ui.add_enabled(
                     !self.busy,
                     egui::TextEdit::singleline(&mut self.link)
-                        .hint_text(if self.mode == Mode::WebText {
+                        .hint_text(if self.mode == Mode::Youtube {
+                            "粘贴 YouTube 视频或 Shorts 链接…"
+                        } else if self.mode == Mode::WebText {
                             "在这里粘贴知乎链接…"
                         } else if self.mode == Mode::Douyin {
                             "粘贴抖音视频链接或整段分享文字…"
@@ -154,6 +161,7 @@ impl App {
                         .margin(egui::vec2(10.0, 8.0)),
                 );
                 if response.changed() {
+                    self.youtube = None;
                     self.douyin_article = None;
                     self.zhihu_content = None;
                     self.video = None;
@@ -187,6 +195,7 @@ impl App {
                     .is_some_and(|video| video.gallery.is_some()))
                 && (self.mode != Mode::WebText || self.zhihu_content.is_some())
                 && !(self.mode == Mode::Xhs && self.xhs_video)
+                && !(self.mode == Mode::Youtube && !self.youtube_subtitles)
             {
                 ui.add_space(6.0);
 
@@ -407,6 +416,7 @@ impl App {
                     !self.link.trim().is_empty()
                 };
             let action = match self.mode {
+                Mode::Youtube => "获取视频与字幕列表",
                 Mode::Subtitle => "获取字幕",
                 Mode::Video => "获取视频",
                 Mode::Xhs => {
@@ -476,7 +486,8 @@ impl App {
                 }
             }
             // Keep platform errors next to the action, even if the footer is off screen.
-            if (self.status.contains("抖音")
+            if (self.status.contains("YouTube")
+                || self.status.contains("抖音")
                 || self.status.contains("小红书")
                 || self.status.starts_with("解析链接失败"))
                 && !(self.mode == Mode::Douyin
@@ -512,6 +523,9 @@ impl App {
                     caption(
                         ui,
                         match self.mode {
+                            Mode::Youtube => {
+                                "先获取 → 下载视频或选择语言导出字幕；无字幕可用本地转写"
+                            }
                             Mode::BiliText => "先获取图文 → 核对预览 → 确认导出",
                             Mode::Subtitle => "AI 字幕需要登录后获取，支持多种文档格式",
                             Mode::Video => "高画质视频需要登录 B站，输出为 MP4",
@@ -545,9 +559,48 @@ impl App {
         if self.mode == Mode::Douyin && (self.douyin_article_mode || self.external.is_none()) {
             return;
         }
+        if self.mode == Mode::Youtube && self.youtube_subtitles {
+            if let Some(video) = self.youtube.clone() {
+                card().show(ui, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(&video.title).strong()).truncate());
+                    if video.tracks.is_empty() {
+                        caption(ui, "没有可用字幕；可下载视频后使用音视频转写。");
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label("字幕语言");
+                            egui::ComboBox::from_id_salt("youtube_language")
+                                .width((ui.available_width() - 150.0).max(180.0))
+                                .selected_text(
+                                    video
+                                        .tracks
+                                        .get(self.youtube_track)
+                                        .map(|t| t.label.as_str())
+                                        .unwrap_or("请选择"),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (i, track) in video.tracks.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.youtube_track,
+                                            i,
+                                            &track.label,
+                                        );
+                                    }
+                                });
+                        });
+                        if primary_button(ui, "导出字幕", !self.busy) {
+                            self.spawn_export_youtube();
+                        }
+                        caption(ui, "保存所选文档格式，并同时保存 SRT 时间轴字幕");
+                    }
+                });
+            }
+            return;
+        }
         if let Some(video) = self.external.clone().filter(|video| {
-            matches!(self.mode, Mode::Video | Mode::Douyin | Mode::Xhs)
-                && (self.mode != Mode::Xhs || external::is_xhs(&video.url))
+            matches!(
+                self.mode,
+                Mode::Video | Mode::Douyin | Mode::Xhs | Mode::Youtube
+            ) && (self.mode != Mode::Xhs || external::is_xhs(&video.url))
                 && (self.mode != Mode::Douyin || external::is_douyin(&video.url))
         }) {
             card().show(ui, |ui| {
@@ -837,6 +890,8 @@ mod tests {
                 Mode::Douyin,
                 Mode::Douyin,
                 Mode::Xhs,
+                Mode::Youtube,
+                Mode::Youtube,
                 Mode::BiliText,
                 Mode::Xhs,
                 Mode::WebText,
@@ -849,6 +904,18 @@ mod tests {
                 apply_style(&ctx);
                 let mut app = App::new(&ctx);
                 app.mode = mode;
+                if mode == Mode::Youtube {
+                    app.youtube_subtitles = index == 10;
+                    app.youtube = Some(crate::youtube::Video {
+                        title: "YouTube 示例".into(),
+                        url: "https://www.youtube.com/watch?v=jNQXAC9IVRw".into(),
+                        tracks: vec![crate::youtube::Track {
+                            language: "zh-Hans".into(),
+                            label: "中文 · 自动字幕".into(),
+                            automatic: true,
+                        }],
+                    });
+                }
                 if index == 10 {
                     app.xhs_video = true;
                 }

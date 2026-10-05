@@ -1,7 +1,7 @@
 ﻿; Build from the repository root with Inno Setup 6:
 ;   ISCC.exe installer\installer.iss
 #define MyAppName "拾文"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.5.1"
 #define MyAppPublisher "QuanShengLi0508"
 #define MyAppExeName "拾文.exe"
 
@@ -14,7 +14,7 @@ DefaultDirName={localappdata}\Programs\BilibiliSubtitleVideoDownloader
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=Shiwen-1.5.0-Setup-x64
+OutputBaseFilename=Shiwen-1.5.1-Setup-x64
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
@@ -33,6 +33,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\拾文.exe"; DestName: "{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bili-subtitle-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\tools\node.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\tools\yt-dlp.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\whisper\whisper-cli.exe"; DestDir: "{app}\whisper"; Flags: ignoreversion
 Source: "..\whisper\ggml-base-q5_1.bin"; DestDir: "{app}\whisper"; Flags: ignoreversion

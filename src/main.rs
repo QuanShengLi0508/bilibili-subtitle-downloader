@@ -9,6 +9,7 @@ mod export;
 mod external;
 mod gui;
 mod transcribe;
+mod youtube;
 mod zhihu;
 mod zhihu_login;
 

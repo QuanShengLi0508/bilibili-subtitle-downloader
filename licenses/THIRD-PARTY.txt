@@ -9,3 +9,6 @@ https://github.com/ggml-org/whisper.cpp/tree/v1.7.6
 SDL2：zlib License，https://libsdl.org/
 yt-dlp：Unlicense，打包版第三方依赖许可证见 https://github.com/yt-dlp/yt-dlp/blob/master/THIRD_PARTY_LICENSES
 Microsoft Visual C++ Runtime：Microsoft 可再发行组件，随应用使用。
+
+Node.js 24.19.0：MIT 和随附第三方许可证，见 Node-LICENSE.txt。
+https://github.com/nodejs/node/tree/v24.19.0

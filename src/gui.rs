@@ -18,6 +18,7 @@ const LOGO_PNG: &[u8] = include_bytes!("../assets/subtitle-extractor-logo.png");
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
+    Youtube,
     BiliText,
     Subtitle,
     Video,
@@ -28,6 +29,8 @@ enum Mode {
 }
 
 enum Msg {
+    YoutubeLoaded(Result<crate::youtube::Video>),
+    YoutubeSaved(Result<Vec<PathBuf>>),
     VideoLoaded(
         Box<VideoInfo>,
         usize,
@@ -63,6 +66,9 @@ struct App {
     logo: egui::TextureHandle,
     ffmpeg_ok: bool,
     mode: Mode,
+    youtube: Option<crate::youtube::Video>,
+    youtube_subtitles: bool,
+    youtube_track: usize,
     link: String,
     status: String,
     busy: bool,
@@ -238,6 +244,9 @@ impl App {
         Self {
             logo,
             mode: Mode::Subtitle,
+            youtube: None,
+            youtube_subtitles: false,
+            youtube_track: 0,
             ffmpeg_ok: Client::ffmpeg_available(),
             link: String::new(),
             status: "粘贴B站视频链接，然后点「获取」".into(),
@@ -275,6 +284,30 @@ impl App {
         }
     }
 
+    fn spawn_export_youtube(&mut self) {
+        let Some(video) = self.youtube.clone() else {
+            return;
+        };
+        let Some(track) = video.tracks.get(self.youtube_track).cloned() else {
+            self.status = "该视频没有可导出的字幕，可下载后使用本地转写".into();
+            return;
+        };
+        let Some(tool) = external::find_yt_dlp() else {
+            self.status = "下载组件未就绪，请重新安装应用".into();
+            return;
+        };
+        let directory = self.output_dir.clone();
+        let format = self.text_format;
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "正在获取并导出 YouTube 字幕…".into();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::YoutubeSaved(crate::youtube::export(
+                &video, &track, &tool, &directory, format,
+            )));
+        });
+    }
+
     fn spawn_fetch_video(&mut self) {
         let input = self.link.clone();
         if input.trim().is_empty() {
@@ -288,6 +321,25 @@ impl App {
         self.video_progress = None;
         self.busy = true;
 
+        if self.mode == Mode::Youtube {
+            self.youtube = None;
+            if crate::youtube::link(&input).is_none() {
+                self.busy = false;
+                self.status = "请粘贴 YouTube 视频、Shorts 或短链接".into();
+                return;
+            }
+            let Some(tool) = external::find_yt_dlp() else {
+                self.busy = false;
+                self.status = "下载组件未就绪，请重新安装应用".into();
+                return;
+            };
+            self.status = "正在获取 YouTube 视频与字幕语言…".into();
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send(Msg::YoutubeLoaded(crate::youtube::probe(&input, &tool)));
+            });
+            return;
+        }
         if self.mode == Mode::Xhs && !self.xhs_video {
             if !external::is_xhs(&input) {
                 self.busy = false;
@@ -510,7 +562,7 @@ impl App {
         self.status = if external_video.gallery.is_some() {
             "正在保存图文图片和文案..."
         } else {
-            "正在下载抖音/小红书视频..."
+            "正在下载视频..."
         }
         .into();
         thread::spawn(move || {
@@ -725,6 +777,26 @@ impl App {
                 self.busy = false;
             }
             match msg {
+                Msg::YoutubeLoaded(result) => match result {
+                    Ok(video) => {
+                        self.youtube_track = 0;
+                        self.status = format!("视频已获取，可用字幕 {} 种", video.tracks.len());
+                        self.external = Some(external::ExternalVideo {
+                            title: video.title.clone(),
+                            url: video.url.clone(),
+                            gallery: None,
+                        });
+                        self.youtube = Some(video);
+                    }
+                    Err(error) => self.status = format!("{error:#}"),
+                },
+                Msg::YoutubeSaved(result) => match result {
+                    Ok(paths) => {
+                        self.saved_files = paths;
+                        self.status = "YouTube 字幕导出完成".into();
+                    }
+                    Err(error) => self.status = format!("{error:#}"),
+                },
                 Msg::DouyinArticleLoaded(result) => match result {
                     Ok(Some(article)) => {
                         self.status = format!(

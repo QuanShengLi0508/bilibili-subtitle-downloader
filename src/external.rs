@@ -318,8 +318,21 @@ pub fn douyin_cookie_path() -> PathBuf {
     crate::zhihu_login::session_directory().join("douyin-cookies.txt")
 }
 
-fn configure_command(command: &mut std::process::Command, url: &str) {
+pub(crate) fn configure_command(command: &mut std::process::Command, url: &str) {
     command.env("PYTHONIOENCODING", "utf-8");
+    if crate::youtube::link(url).is_some() {
+        if crate::youtube::cookie_path().is_file() {
+            command.arg("--cookies").arg(crate::youtube::cookie_path());
+        }
+        if let Some(tool) = find_yt_dlp() {
+            let node = tool.parent().unwrap_or(Path::new(".")).join("node.exe");
+            if node.is_file() {
+                command
+                    .arg("--js-runtimes")
+                    .arg(format!("node:{}", node.display()));
+            }
+        }
+    }
     if is_douyin(url) && douyin_cookie_path().is_file() {
         command.arg("--cookies").arg(douyin_cookie_path());
     }
@@ -372,6 +385,8 @@ fn supported_host(url: &str) -> bool {
         "iesdouyin.com",
         "xiaohongshu.com",
         "xhslink.com",
+        "youtube.com",
+        "youtu.be",
     ]
     .iter()
     .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
@@ -468,7 +483,7 @@ mod tests {
 }
 
 pub fn probe(url: &str, tool: &Path) -> Result<ExternalVideo> {
-    let url = supported_url(url).context("未找到抖音或小红书视频链接")?;
+    let url = supported_url(url).context("未找到支持的视频链接")?;
     if is_douyin(&url) {
         if let Some(gallery) = gallery_probe(&url)? {
             return Ok(gallery);

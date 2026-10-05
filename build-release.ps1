@@ -27,7 +27,7 @@ try {
     Copy-Item -LiteralPath $builtExe -Destination (Join-Path $packageDir 'bili-subtitle-downloader.exe') -Force
     Copy-Item -LiteralPath $builtCli -Destination (Join-Path $packageDir 'bili-subtitle-cli.exe') -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $packageDir -Force
-    foreach ($relative in @('tools\yt-dlp.exe', 'tools\ffmpeg.exe', 'tools\ffprobe.exe', 'whisper\whisper-cli.exe', 'whisper\ggml-base-q5_1.bin')) {
+    foreach ($relative in @('tools\node.exe', 'tools\yt-dlp.exe', 'tools\ffmpeg.exe', 'tools\ffprobe.exe', 'whisper\whisper-cli.exe', 'whisper\ggml-base-q5_1.bin')) {
         $source = Join-Path $projectRoot $relative
         if (Test-Path -LiteralPath $source) {
             $destination = Join-Path $packageDir $relative
