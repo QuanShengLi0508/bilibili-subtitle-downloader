@@ -18,11 +18,13 @@ const LOGO_PNG: &[u8] = include_bytes!("../assets/subtitle-extractor-logo.png");
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
+    BiliText,
     Subtitle,
     Video,
     Transcribe,
     WebText,
     Douyin,
+    Xhs,
 }
 
 enum Msg {
@@ -46,6 +48,7 @@ enum Msg {
     ZhihuLoaded(Result<zhihu::ZhihuContent>),
     ZhihuLoginFinished(Result<bool>),
     DouyinLoginFinished(Result<bool>),
+    XhsLoginFinished(Result<bool>),
     DouyinArticleLoaded(Result<Option<crate::douyin_article::Article>>),
     DouyinArticleSaved(Result<PathBuf>),
     QrReady {
@@ -72,6 +75,9 @@ struct App {
     video_progress: Option<f64>,
     external: Option<external::ExternalVideo>,
     douyin_article_mode: bool,
+    gallery_mode: bool,
+    xhs_video: bool,
+    zhihu_article: bool,
     douyin_article: Option<Arc<crate::douyin_article::Article>>,
     douyin_preview_open: bool,
     media_file: Option<PathBuf>,
@@ -93,9 +99,45 @@ struct App {
 }
 
 impl App {
+    fn spawn_xhs_login(&mut self) {
+        self.busy = true;
+        self.status = "请在小红书官方窗口登录，完成后关闭窗口，再获取图文".into();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| -> Result<bool> {
+                let output = tempfile::NamedTempFile::new()?;
+                let mut command = std::process::Command::new(std::env::current_exe()?);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    command.creation_flags(0x08000000);
+                }
+                let status = command
+                    .arg("--xhs-gallery")
+                    .arg("https://www.xiaohongshu.com/explore")
+                    .arg(output.path())
+                    .status()?;
+                if !matches!(status.code(), Some(0 | 2)) {
+                    anyhow::bail!("无法打开小红书窗口");
+                }
+                Ok(true)
+            })();
+            let _ = tx.send(Msg::XhsLoginFinished(result));
+        });
+    }
     fn spawn_read_douyin_article(&mut self) {
-        if !external::is_douyin(&self.link) {
-            self.status = "请粘贴抖音长文章分享链接".into();
+        let valid = if self.mode == Mode::BiliText {
+            crate::douyin_article::bili_url(&self.link).is_some()
+        } else {
+            external::is_douyin(&self.link)
+        };
+        if !valid {
+            self.status = if self.mode == Mode::BiliText {
+                "请粘贴 B站图文或专栏链接"
+            } else {
+                "请粘贴抖音长文章分享链接"
+            }
+            .into();
             return;
         }
         self.douyin_article = None;
@@ -103,11 +145,16 @@ impl App {
         self.status = "请在文章窗口阅读全文，点击右下角获取正文，再回到拾文确认导出".into();
         let input = self.link.clone();
         let tx = self.tx.clone();
+        let bili = self.mode == Mode::BiliText;
         thread::spawn(move || {
             let result = (|| -> Result<Option<crate::douyin_article::Article>> {
                 let response = tempfile::NamedTempFile::new()?;
                 let status = std::process::Command::new(std::env::current_exe()?)
-                    .arg("--douyin-article")
+                    .arg(if bili {
+                        "--bili-article"
+                    } else {
+                        "--douyin-article"
+                    })
                     .arg(&input)
                     .arg(response.path())
                     .status()?;
@@ -129,7 +176,7 @@ impl App {
         let dir = self.output_dir.clone();
         let format = self.text_format;
         self.busy = true;
-        self.status = "正在导出抖音长文章…".into();
+        self.status = "正在导出文章…".into();
         let tx = self.tx.clone();
         thread::spawn(move || {
             let _ = tx.send(Msg::DouyinArticleSaved(article.export(&dir, format)));
@@ -204,6 +251,9 @@ impl App {
             video_progress: None,
             external: None,
             douyin_article_mode: false,
+            gallery_mode: false,
+            xhs_video: false,
+            zhihu_article: false,
             douyin_article: None,
             douyin_preview_open: false,
             media_file: None,
@@ -238,15 +288,43 @@ impl App {
         self.video_progress = None;
         self.busy = true;
 
+        if self.mode == Mode::Xhs && !self.xhs_video {
+            if !external::is_xhs(&input) {
+                self.busy = false;
+                self.status = "请粘贴小红书图文链接或整段分享文字".into();
+                return;
+            }
+            self.status = "正在打开小红书，读取图文和图片数量...".into();
+            let tx = self.tx.clone();
+            thread::spawn(move || match external::probe_xhs(&input) {
+                Ok(video) => {
+                    let _ = tx.send(Msg::ExternalLoaded(Box::new(video)));
+                }
+                Err(error) => {
+                    let _ = tx.send(Msg::Failed(format!("小红书图文获取失败：{error:#}")));
+                }
+            });
+            return;
+        }
         if self.mode == Mode::Douyin && !external::is_douyin(&input) {
             self.busy = false;
             self.status = "请粘贴抖音视频链接、精选链接或分享文字".into();
             return;
         }
+        if self.mode == Mode::Xhs && !external::is_xhs(&input) {
+            self.busy = false;
+            self.status = "请粘贴小红书链接".into();
+            return;
+        }
+        if self.mode == Mode::Video && external::is_supported(&input) {
+            self.busy = false;
+            self.status = "请在对应的抖音或小红书页面获取".into();
+            return;
+        }
         if external::is_supported(&input) {
-            if !matches!(self.mode, Mode::Video | Mode::Douyin) {
+            if !matches!(self.mode, Mode::Video | Mode::Douyin | Mode::Xhs) {
                 self.busy = false;
-                self.status = "抖音请切换到「抖音下载」；小红书请切换到「下载视频」。抖音文字可下载后在本机转写。".into();
+                self.status = "请切换到对应的「抖音」或「小红书」页面，再选择视频或图文。".into();
                 return;
             }
             let Some(tool) = external::find_yt_dlp() else {
@@ -418,10 +496,11 @@ impl App {
         let Some(external_video) = self.external.clone() else {
             return;
         };
-        let Some(tool) = external::find_yt_dlp() else {
+        let tool = external::find_yt_dlp();
+        if external_video.gallery.is_none() && tool.is_none() {
             self.status = "未找到 tools/yt-dlp.exe".into();
             return;
-        };
+        }
         let dir = self.output_dir.clone();
         let tx = self.tx.clone();
 
@@ -441,7 +520,12 @@ impl App {
             let res = if external_video.gallery.is_some() {
                 external::download_gallery(&external_video, &dir, format, &progress)
             } else {
-                external::download(&external_video.url, &tool, &dir, &progress)
+                external::download(
+                    &external_video.url,
+                    tool.as_deref().expect("video tool checked"),
+                    &dir,
+                    &progress,
+                )
             };
             let _ = tx.send(Msg::ExternalSaved(res));
         });
@@ -485,6 +569,18 @@ impl App {
         if input.is_empty() {
             self.status = "请先粘贴知乎回答或专栏链接".into();
             return;
+        }
+        if let Ok(url) = reqwest::Url::parse(&input) {
+            let article = url.path().starts_with("/p/");
+            if article != self.zhihu_article {
+                self.status = if self.zhihu_article {
+                    "请粘贴知乎专栏文章链接，问答请切换到「问答」"
+                } else {
+                    "请粘贴知乎问题或回答链接，专栏请切换到「专栏」"
+                }
+                .into();
+                return;
+            }
         }
         self.zhihu_content = None;
         self.zhihu_from.clear();
@@ -632,7 +728,7 @@ impl App {
                 Msg::DouyinArticleLoaded(result) => match result {
                     Ok(Some(article)) => {
                         self.status = format!(
-                            "已获取抖音文字 {} 字，请核对正文与末尾后确认导出{}",
+                            "已获取文字 {} 字，请核对正文与末尾后确认导出{}",
                             article.body.chars().count(),
                             if article.selected {
                                 "（当前为选中文字）"
@@ -642,15 +738,15 @@ impl App {
                         );
                         self.douyin_article = Some(Arc::new(article));
                     }
-                    Ok(None) => self.status = "已取消获取抖音长文章".into(),
-                    Err(error) => self.status = format!("抖音文章获取失败：{error:#}"),
+                    Ok(None) => self.status = "已取消获取文章".into(),
+                    Err(error) => self.status = format!("文章获取失败：{error:#}"),
                 },
                 Msg::DouyinArticleSaved(result) => match result {
                     Ok(path) => {
                         self.saved_files = vec![path.clone()];
                         self.status = format!("已保存: {}", path.display());
                     }
-                    Err(error) => self.status = format!("抖音文章导出失败：{error:#}"),
+                    Err(error) => self.status = format!("文章导出失败：{error:#}"),
                 },
                 Msg::DouyinLoginFinished(result) => {
                     self.busy = false;
@@ -658,6 +754,13 @@ impl App {
                         Ok(true) => "抖音访问会话已保存，请重新获取视频".into(),
                         Ok(false) => "未获取抖音访问会话，请重试".into(),
                         Err(error) => format!("抖音登录失败：{error:#}"),
+                    };
+                }
+                Msg::XhsLoginFinished(result) => {
+                    self.busy = false;
+                    self.status = match result {
+                        Ok(_) => "小红书窗口已关闭，请粘贴笔记分享文字并获取图文".into(),
+                        Err(error) => format!("小红书窗口打开失败：{error:#}"),
                     };
                 }
                 Msg::ExternalLoaded(video) => {
@@ -671,6 +774,9 @@ impl App {
                         ),
                         None => "已解析链接，可以下载视频".into(),
                     };
+                    if self.mode == Mode::Douyin {
+                        self.gallery_mode = video.gallery.is_some();
+                    }
                     self.external = Some(*video);
                 }
                 Msg::ExternalSaved(res) => match res {

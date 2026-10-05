@@ -255,6 +255,15 @@ impl App {
                                     .size(11.0)
                                     .color(MUTED),
                                 );
+                            } else if self.mode == Mode::Xhs {
+                                if secondary_button(ui, "小红书登录", !self.busy) {
+                                    self.spawn_xhs_login();
+                                }
+                                ui.label(
+                                    egui::RichText::new("需要时在官方网页登录")
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
                             } else if self.mode == Mode::WebText {
                                 if secondary_button(ui, "知乎登录", !self.busy) {
                                     self.spawn_zhihu_login();
@@ -294,18 +303,20 @@ impl App {
                 ui.horizontal(|ui| {
                     let width = (ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0;
                     for (mode, label, compact, symbol) in [
-                        (Mode::Subtitle, "下载字幕", "下载字幕", Symbol::Document),
-                        (Mode::Video, "下载视频", "下载视频", Symbol::Play),
-                        (Mode::Douyin, "抖音下载", "抖音下载", Symbol::Play),
+                        (Mode::Subtitle, "哔哩哔哩", "哔哩哔哩", Symbol::Play),
+                        (Mode::Douyin, "抖音", "抖音", Symbol::Play),
+                        (Mode::Xhs, "小红书", "小红书", Symbol::Document),
                         (
                             Mode::Transcribe,
                             "音频/视频转文字",
-                            "音视频转文字",
+                            "音视频转写",
                             Symbol::Wave,
                         ),
-                        (Mode::WebText, "知乎文本", "知乎文本", Symbol::Document),
+                        (Mode::WebText, "知乎", "知乎", Symbol::Document),
                     ] {
-                        let selected = self.mode == mode;
+                        let selected = self.mode == mode
+                            || (mode == Mode::Subtitle
+                                && matches!(self.mode, Mode::Video | Mode::BiliText));
                         let label = if width < 190.0 { compact } else { label };
                         ui.add_enabled_ui(!self.busy, |ui| {
                             let (rect, response) = ui
@@ -351,7 +362,13 @@ impl App {
                                 || (response.has_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                             {
-                                self.mode = mode;
+                                if !selected {
+                                    self.mode = mode;
+                                    self.external = None;
+                                    self.video = None;
+                                    self.douyin_article = None;
+                                    self.zhihu_content = None;
+                                }
                             }
                         });
                     }
@@ -462,7 +479,7 @@ impl App {
             });
         self.login_window(ctx);
         if let Some(article) = self.douyin_article.clone() {
-            egui::Window::new("抖音长文章 · 全部文字预览")
+            egui::Window::new("图文 / 文章 · 全部文字预览")
                 .open(&mut self.douyin_preview_open)
                 .default_width(640.0)
                 .show(ctx, |ui| {
@@ -643,7 +660,11 @@ mod tests {
         app.link = "https://www.douyin.com/jingxuan?modal_id=7673787196373060900".into();
         app.spawn_fetch_video();
         assert!(!app.busy);
-        assert!(app.status.contains("抖音下载"));
+        assert!(app.status.contains("抖音"));
+        app.mode = Mode::Xhs;
+        app.spawn_fetch_video();
+        assert!(!app.busy);
+        assert!(app.status.contains("请粘贴小红书"));
     }
 
     #[test]

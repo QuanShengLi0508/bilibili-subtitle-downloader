@@ -14,7 +14,10 @@ mod zhihu_login;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<_> = std::env::args().collect();
-    if let Some(index) = args.iter().position(|arg| arg == "--douyin-gallery") {
+    if let Some(index) = args
+        .iter()
+        .position(|arg| arg == "--douyin-gallery" || arg == "--xhs-gallery")
+    {
         let result = (|| -> anyhow::Result<bool> {
             let url = args
                 .get(index + 1)
@@ -37,7 +40,10 @@ fn main() -> eframe::Result<()> {
         };
         std::process::exit(code);
     }
-    if let Some(index) = args.iter().position(|arg| arg == "--douyin-article") {
+    if let Some(index) = args
+        .iter()
+        .position(|arg| arg == "--douyin-article" || arg == "--bili-article")
+    {
         let result = (|| -> anyhow::Result<bool> {
             let url = args
                 .get(index + 1)

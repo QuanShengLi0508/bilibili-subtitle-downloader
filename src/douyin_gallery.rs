@@ -23,16 +23,34 @@ pub fn open_reader(url: &str, output: &Path) -> Result<bool> {
             }
             let setup = (|| -> Result<_> {
                 let profile = crate::zhihu_login::session_directory().join("douyin-webview");
+                let xhs = crate::external::is_xhs(&self.url);
+                let profile = if xhs {
+                    crate::zhihu_login::session_directory().join("xhs-webview")
+                } else {
+                    profile
+                };
                 std::fs::create_dir_all(&profile)?;
                 let window = event_loop.create_window(
                     Window::default_attributes()
-                        .with_title("拾文 · 读取抖音图文（完成后自动返回）")
+                        .with_title(
+                            if xhs && self.url == "https://www.xiaohongshu.com/explore" {
+                                "拾文 · 小红书登录（完成后关闭窗口）"
+                            } else if xhs {
+                                "拾文 · 读取小红书图文（完成后自动返回）"
+                            } else {
+                                "拾文 · 读取抖音图文（完成后自动返回）"
+                            },
+                        )
                         .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0)),
                 )?;
                 let mut context = wry::WebContext::new(Some(profile));
                 let proxy = self.proxy.clone();
                 let webview = wry::WebViewBuilder::new_with_web_context(&mut context)
-                    .with_initialization_script(include_str!("douyin_gallery.js"))
+                    .with_initialization_script(if xhs {
+                        include_str!("xhs_gallery.js")
+                    } else {
+                        include_str!("douyin_gallery.js")
+                    })
                     .with_ipc_handler(move |request| {
                         let _ = proxy.send_event(request.body().clone());
                     })
@@ -60,7 +78,7 @@ pub fn open_reader(url: &str, output: &Path) -> Result<bool> {
                 }
                 Err(error) => {
                     rfd::MessageDialog::new()
-                        .set_title("抖音图文")
+                        .set_title("图文提取")
                         .set_description(error.to_string())
                         .show();
                 }
@@ -72,9 +90,9 @@ pub fn open_reader(url: &str, output: &Path) -> Result<bool> {
             }
         }
     }
-    let url = crate::external::supported_url(url).context("请粘贴抖音图文分享链接")?;
-    if !crate::external::is_douyin(&url) {
-        bail!("仅支持抖音图文链接");
+    let url = crate::external::supported_url(url).context("请粘贴图文分享链接")?;
+    if !crate::external::is_douyin(&url) && !crate::external::is_xhs(&url) {
+        bail!("仅支持抖音或小红书图文链接");
     }
     let event_loop = EventLoop::<String>::with_user_event().build()?;
     let mut reader = Reader {

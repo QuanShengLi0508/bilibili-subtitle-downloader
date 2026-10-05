@@ -25,11 +25,16 @@ impl Gallery {
         }
         let value: Value = serde_json::from_str(message)?;
         let source = value["source"].as_str().unwrap_or_default();
-        if !is_douyin(source)
-            || note_id(source) != note_id(expected_url)
-            || note_id(source).is_none()
-        {
-            bail!("当前页面不是所选的抖音图文作品");
+        let xhs = is_xhs(expected_url);
+        let matches = if xhs {
+            is_xhs(source) && xhs_id(source).is_some() && xhs_id(source) == xhs_id(expected_url)
+        } else {
+            is_douyin(source)
+                && note_id(source).is_some()
+                && note_id(source) == note_id(expected_url)
+        };
+        if !matches {
+            bail!("当前页面不是所选的图文作品");
         }
         let entries = value["images"].as_array().context("没有读取到作品图片")?;
         if entries.is_empty() || entries.len() > 200 {
@@ -40,12 +45,15 @@ impl Gallery {
             let url = entry.as_str().context("图片链接无效")?;
             let parsed = reqwest::Url::parse(url)?;
             let host = parsed.host_str().unwrap_or_default();
-            if parsed.scheme() != "https"
-                || !(host == "douyinpic.com"
+            let allowed = if xhs {
+                host == "xhscdn.com" || host.ends_with(".xhscdn.com")
+            } else {
+                host == "douyinpic.com"
                     || host.ends_with(".douyinpic.com")
-                    || host.ends_with(".byteimg.com"))
-            {
-                bail!("图片来源不是抖音图片服务器");
+                    || host.ends_with(".byteimg.com")
+            };
+            if parsed.scheme() != "https" || !allowed {
+                bail!("图片来源不是该平台的图片服务器");
             }
             if !images.iter().any(|saved| saved == url) {
                 images.push(url.to_owned());
@@ -57,6 +65,80 @@ impl Gallery {
             images,
         })
     }
+}
+
+pub fn is_xhs(input: &str) -> bool {
+    supported_url(input)
+        .and_then(|url| reqwest::Url::parse(&url).ok())
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            ["xiaohongshu.com", "xhslink.com"]
+                .iter()
+                .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+        })
+}
+
+fn xhs_id(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let parts: Vec<_> = parsed.path_segments()?.collect();
+    parts
+        .windows(2)
+        .find(|p| {
+            matches!(p[0], "explore" | "item")
+                && p[1].len() == 24
+                && p[1].chars().all(|c| c.is_ascii_hexdigit())
+        })
+        .map(|p| p[1].to_ascii_lowercase())
+}
+
+pub fn probe_xhs(input: &str) -> Result<ExternalVideo> {
+    let url = supported_url(input)
+        .filter(|u| is_xhs(u))
+        .context("请粘贴小红书图文链接或分享文字")?;
+    let resolved = if xhs_id(&url).is_some() {
+        url
+    } else {
+        reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(20))
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36")
+            .build()?.get(&url).send()?.error_for_status()?.url().to_string()
+    };
+    if !is_xhs(&resolved) || xhs_id(&resolved).is_none() {
+        bail!("未定位到小红书笔记，请从分享菜单复制完整链接");
+    }
+    // Keep the original query: xsec_token is needed to open the shared note.
+    let preview = tempfile::NamedTempFile::new()?;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let status = command
+        .arg("--xhs-gallery")
+        .arg(&resolved)
+        .arg(preview.path())
+        .status()?;
+    if status.code() == Some(2) {
+        bail!("已取消小红书图文提取");
+    }
+    if !status.success() {
+        bail!("小红书图文窗口读取失败，请重试");
+    }
+    let message = std::fs::read_to_string(preview.path())?;
+    let value: Value = serde_json::from_str(&message)?;
+    let gallery = Gallery::from_message(&message, &resolved)?;
+    let title = value["title"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or("小红书图文")
+        .chars()
+        .take(70)
+        .collect();
+    Ok(ExternalVideo {
+        title,
+        url: resolved,
+        gallery: Some(gallery),
+    })
 }
 
 fn note_id(url: &str) -> Option<String> {
@@ -142,7 +224,16 @@ pub fn download_gallery(
     for (index, url) in gallery.images.iter().enumerate() {
         let response = client
             .get(url)
-            .header("Referer", "https://www.douyin.com/")
+            .header(
+                "Referer",
+                if crate::douyin_article::bili_url(&video.url).is_some() {
+                    "https://www.bilibili.com/"
+                } else if is_xhs(&video.url) {
+                    "https://www.xiaohongshu.com/"
+                } else {
+                    "https://www.douyin.com/"
+                },
+            )
             .send()?
             .error_for_status()?;
         let mut bytes = Vec::new();
@@ -315,6 +406,30 @@ mod tests {
         assert_eq!(image_extension(b"RIFF0000WEBPdata"), Some("webp"));
         assert_eq!(image_extension(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
         assert_eq!(image_extension(b"<html>Forbidden</html>"), None);
+    }
+
+    #[test]
+    fn xhs_share_keeps_access_query_and_matches_only_the_requested_note() {
+        let source = "https://www.xiaohongshu.com/explore/674051740000000007027a15?xsec_token=test%3D&xsec_source=pc_share";
+        assert_eq!(
+            supported_url(&format!("笔记标题 http://xhslink.com/a/abc 查看更多")),
+            Some("http://xhslink.com/a/abc".into())
+        );
+        assert_eq!(supported_url(source), Some(source.into()));
+        let mut value = serde_json::json!({"source":source,"description":"首段\n末尾文字完整保留","author":"作者", "images":["https://sns-webpic-qc.xhscdn.com/picture1.webp", "https://sns-webpic-qc.xhscdn.com/picture2.webp"]});
+        let gallery = Gallery::from_message(&value.to_string(), source).unwrap();
+        assert_eq!(gallery.images.len(), 2);
+        assert!(gallery.description.ends_with("末尾文字完整保留"));
+        assert!(Gallery::from_message(
+            &value.to_string(),
+            "https://www.xiaohongshu.com/explore/674051740000000007027a16"
+        )
+        .is_err());
+        value["images"] = serde_json::json!(["https://xhscdn.com.evil.test/image.webp"]);
+        assert!(Gallery::from_message(&value.to_string(), source).is_err());
+        value["source"] =
+            "https://xiaohongshu.com.evil.test/explore/674051740000000007027a15".into();
+        assert!(Gallery::from_message(&value.to_string(), source).is_err());
     }
 
     #[test]

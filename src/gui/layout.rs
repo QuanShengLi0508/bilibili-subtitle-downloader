@@ -33,30 +33,87 @@ impl App {
     pub(super) fn source_card(&mut self, ui: &mut egui::Ui) {
         egui::Frame::default().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if self.mode == Mode::Douyin && self.douyin_article_mode {
+            if (self.mode == Mode::Douyin && self.douyin_article_mode)
+                || self.mode == Mode::BiliText
+            {
                 ui.spacing_mut().item_spacing.y = 3.0;
             }
-            if self.mode == Mode::Douyin {
-                let previous = self.douyin_article_mode;
-                ui.add_enabled_ui(!self.busy, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(
-                            &mut self.douyin_article_mode,
-                            false,
-                            "视频 / 图文下载",
-                        );
-                        ui.selectable_value(
-                            &mut self.douyin_article_mode,
-                            true,
-                            "长文章 · 导出文字",
-                        );
-                    });
+            let before = (
+                self.mode,
+                self.douyin_article_mode,
+                self.gallery_mode,
+                self.xhs_video,
+                self.zhihu_article,
+            );
+            ui.add_enabled_ui(!self.busy, |ui| {
+                ui.horizontal(|ui| match self.mode {
+                    Mode::Subtitle | Mode::Video | Mode::BiliText => {
+                        let video = self.mode != Mode::BiliText;
+                        if ui.selectable_label(video, "视频").clicked() {
+                            self.mode = Mode::Video;
+                        }
+                        if ui.selectable_label(!video, "图文").clicked() {
+                            self.mode = Mode::BiliText;
+                        }
+                        if video {
+                            ui.separator();
+                            ui.selectable_value(&mut self.mode, Mode::Video, "下载视频");
+                            ui.selectable_value(&mut self.mode, Mode::Subtitle, "提取字幕");
+                        }
+                    }
+                    Mode::Douyin => {
+                        if ui
+                            .selectable_label(
+                                !self.douyin_article_mode && !self.gallery_mode,
+                                "视频",
+                            )
+                            .clicked()
+                        {
+                            self.douyin_article_mode = false;
+                            self.gallery_mode = false;
+                        }
+                        if ui
+                            .selectable_label(
+                                !self.douyin_article_mode && self.gallery_mode,
+                                "图文",
+                            )
+                            .clicked()
+                        {
+                            self.douyin_article_mode = false;
+                            self.gallery_mode = true;
+                        }
+                        if ui
+                            .selectable_label(self.douyin_article_mode, "长文章")
+                            .clicked()
+                        {
+                            self.douyin_article_mode = true;
+                        }
+                    }
+                    Mode::Xhs => {
+                        ui.selectable_value(&mut self.xhs_video, false, "图文");
+                        ui.selectable_value(&mut self.xhs_video, true, "视频");
+                    }
+                    Mode::WebText => {
+                        ui.selectable_value(&mut self.zhihu_article, true, "专栏");
+                        ui.selectable_value(&mut self.zhihu_article, false, "问答");
+                    }
+                    _ => {}
                 });
-                if previous != self.douyin_article_mode {
-                    self.external = None;
-                    self.douyin_article = None;
-                    self.status = "已切换抖音内容类型，请重新获取".into();
-                }
+            });
+            if before
+                != (
+                    self.mode,
+                    self.douyin_article_mode,
+                    self.gallery_mode,
+                    self.xhs_video,
+                    self.zhihu_article,
+                )
+            {
+                self.external = None;
+                self.video = None;
+                self.douyin_article = None;
+                self.zhihu_content = None;
+                self.status = "已切换内容类型，请重新获取".into();
             }
             if self.mode == Mode::Transcribe {
                 self.file_drop_zone(ui);
@@ -65,9 +122,11 @@ impl App {
                     ui,
                     "粘贴内容链接",
                     match self.mode {
+                        Mode::BiliText => "支持 B站 opus 图文、动态和 cv 专栏链接",
                         Mode::Subtitle => "支持 B站视频链接、短链接或 BV / AV 号",
                         Mode::Video => "支持 B站、抖音、小红书链接",
                         Mode::Douyin => "支持抖音短链接、精选链接和整段分享文字",
+                        Mode::Xhs => "支持小红书图文笔记链接、短链接和整段分享文字",
                         _ => "支持知乎回答、专栏和问题链接",
                     },
                 );
@@ -78,8 +137,18 @@ impl App {
                             "在这里粘贴知乎链接…"
                         } else if self.mode == Mode::Douyin {
                             "粘贴抖音视频链接或整段分享文字…"
+                        } else if self.mode == Mode::Xhs {
+                            if self.xhs_video {
+                                "粘贴小红书视频链接或整段分享文字…"
+                            } else {
+                                "粘贴小红书图文链接或整段分享文字…"
+                            }
                         } else {
-                            "在这里粘贴视频链接…"
+                            if self.mode == Mode::BiliText {
+                                "粘贴 B站 opus 图文、动态或 cv 专栏链接…"
+                            } else {
+                                "在这里粘贴视频链接…"
+                            }
                         })
                         .desired_width(ui.available_width())
                         .margin(egui::vec2(10.0, 8.0)),
@@ -97,7 +166,9 @@ impl App {
                     && !self.busy
                     && !self.link.trim().is_empty()
                 {
-                    if self.mode == Mode::Douyin && self.douyin_article_mode {
+                    if (self.mode == Mode::Douyin && self.douyin_article_mode)
+                        || self.mode == Mode::BiliText
+                    {
                         self.spawn_read_douyin_article();
                     } else if self.mode == Mode::WebText {
                         self.spawn_fetch_zhihu();
@@ -108,12 +179,14 @@ impl App {
             }
 
             if (!matches!(self.mode, Mode::Video | Mode::Douyin)
-                || (self.mode == Mode::Douyin && self.douyin_article_mode)
+                || ((self.mode == Mode::Douyin && self.douyin_article_mode)
+                    || self.mode == Mode::BiliText)
                 || self
                     .external
                     .as_ref()
                     .is_some_and(|video| video.gallery.is_some()))
                 && (self.mode != Mode::WebText || self.zhihu_content.is_some())
+                && !(self.mode == Mode::Xhs && self.xhs_video)
             {
                 ui.add_space(6.0);
 
@@ -154,20 +227,26 @@ impl App {
 
             if self.mode == Mode::WebText {
                 ui.add_space(6.0);
-                let previous_scope = self.zhihu_all_answers;
-                ui.add_enabled_ui(!self.busy, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("获取范围");
-                        ui.selectable_value(
-                            &mut self.zhihu_all_answers,
-                            true,
-                            "整个问题 · 包含更多回答",
-                        );
-                        ui.selectable_value(&mut self.zhihu_all_answers, false, "仅链接中的回答");
+                if !self.zhihu_article {
+                    let previous_scope = self.zhihu_all_answers;
+                    ui.add_enabled_ui(!self.busy, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("获取范围");
+                            ui.selectable_value(
+                                &mut self.zhihu_all_answers,
+                                true,
+                                "整个问题 · 包含更多回答",
+                            );
+                            ui.selectable_value(
+                                &mut self.zhihu_all_answers,
+                                false,
+                                "仅链接中的回答",
+                            );
+                        });
                     });
-                });
-                if previous_scope != self.zhihu_all_answers {
-                    self.zhihu_content = None;
+                    if previous_scope != self.zhihu_all_answers {
+                        self.zhihu_content = None;
+                    }
                 }
                 if let Some(content) = self.zhihu_content.clone() {
                     ui.add_space(10.0);
@@ -249,14 +328,17 @@ impl App {
             }
 
             ui.add_space(6.0);
-            if self.mode == Mode::Douyin && self.douyin_article_mode {
+            if (self.mode == Mode::Douyin && self.douyin_article_mode)
+                || self.mode == Mode::BiliText
+            {
                 if let Some(article) = self.douyin_article.clone() {
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(format!(
-                                "{} · {} 字",
+                                "{} · {} 字 · {} 张配图",
                                 article.title,
-                                article.body.chars().count()
+                                article.body.chars().count(),
+                                article.images.len()
                             ))
                             .strong(),
                         )
@@ -327,6 +409,20 @@ impl App {
             let action = match self.mode {
                 Mode::Subtitle => "获取字幕",
                 Mode::Video => "获取视频",
+                Mode::Xhs => {
+                    if self.xhs_video {
+                        "获取小红书视频"
+                    } else {
+                        "获取小红书图文"
+                    }
+                }
+                Mode::BiliText => {
+                    if self.douyin_article.is_some() {
+                        "确认导出图文"
+                    } else {
+                        "打开并获取 B站图文"
+                    }
+                }
                 Mode::Douyin => {
                     if self.douyin_article_mode {
                         if self.douyin_article.is_some() {
@@ -335,7 +431,11 @@ impl App {
                             "打开并获取长文章"
                         }
                     } else {
-                        "获取抖音视频 / 图文"
+                        if self.gallery_mode {
+                            "获取抖音图文"
+                        } else {
+                            "获取抖音视频"
+                        }
                     }
                 }
                 Mode::Transcribe => "开始识别",
@@ -355,7 +455,9 @@ impl App {
                 super::reference::Symbol::Play,
             ) {
                 match self.mode {
-                    Mode::Douyin if self.douyin_article_mode => {
+                    Mode::BiliText | Mode::Douyin
+                        if self.mode == Mode::BiliText || self.douyin_article_mode =>
+                    {
                         if self.douyin_article.is_some() {
                             self.spawn_export_douyin_article();
                         } else {
@@ -374,7 +476,9 @@ impl App {
                 }
             }
             // Keep platform errors next to the action, even if the footer is off screen.
-            if (self.status.contains("抖音") || self.status.starts_with("解析链接失败"))
+            if (self.status.contains("抖音")
+                || self.status.contains("小红书")
+                || self.status.starts_with("解析链接失败"))
                 && !(self.mode == Mode::Douyin
                     && self.douyin_article_mode
                     && self.douyin_article.is_some())
@@ -382,9 +486,23 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(&self.status).size(12.0).color(INK));
                 if self.mode == Mode::Subtitle && external::is_supported(&self.link) {
-                    if secondary_button(ui, "切换到抖音下载", !self.busy) {
-                        self.mode = Mode::Douyin;
-                        self.status = "已切换到抖音下载，点击「获取抖音视频」尝试解析".into();
+                    let xhs = external::is_xhs(&self.link);
+                    if secondary_button(
+                        ui,
+                        if xhs {
+                            "切换到小红书图文"
+                        } else {
+                            "切换到抖音下载"
+                        },
+                        !self.busy,
+                    ) {
+                        self.mode = if xhs { Mode::Xhs } else { Mode::Douyin };
+                        self.status = if xhs {
+                            "已切换到小红书图文，点击获取读取笔记"
+                        } else {
+                            "已切换到抖音下载，点击获取尝试解析"
+                        }
+                        .into();
                     }
                 }
             }
@@ -394,6 +512,7 @@ impl App {
                     caption(
                         ui,
                         match self.mode {
+                            Mode::BiliText => "先获取图文 → 核对预览 → 确认导出",
                             Mode::Subtitle => "AI 字幕需要登录后获取，支持多种文档格式",
                             Mode::Video => "高画质视频需要登录 B站，输出为 MP4",
                             Mode::Douyin if self.douyin_article_mode => {
@@ -404,6 +523,7 @@ impl App {
                             }
                             Mode::Transcribe => "识别完成后保存所选格式与 SRT 字幕，全程在本机处理",
                             Mode::WebText => "先获取 → 选择范围和格式 → 确认导出",
+                            Mode::Xhs => "先获取 → 核对图片数量 → 保存配图和文案",
                         },
                     );
                 });
@@ -419,17 +539,17 @@ impl App {
     }
 
     pub(super) fn media_card(&mut self, ui: &mut egui::Ui) {
-        if matches!(self.mode, Mode::Transcribe | Mode::WebText) {
+        if matches!(self.mode, Mode::Transcribe | Mode::WebText | Mode::BiliText) {
             return;
         }
         if self.mode == Mode::Douyin && (self.douyin_article_mode || self.external.is_none()) {
             return;
         }
-        if let Some(video) = self
-            .external
-            .clone()
-            .filter(|_| matches!(self.mode, Mode::Video | Mode::Douyin))
-        {
+        if let Some(video) = self.external.clone().filter(|video| {
+            matches!(self.mode, Mode::Video | Mode::Douyin | Mode::Xhs)
+                && (self.mode != Mode::Xhs || external::is_xhs(&video.url))
+                && (self.mode != Mode::Douyin || external::is_douyin(&video.url))
+        }) {
             card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let is_gallery = video.gallery.is_some();
@@ -716,6 +836,10 @@ mod tests {
                 Mode::Transcribe,
                 Mode::Douyin,
                 Mode::Douyin,
+                Mode::Xhs,
+                Mode::BiliText,
+                Mode::Xhs,
+                Mode::WebText,
             ]
             .into_iter()
             .enumerate()
@@ -725,6 +849,12 @@ mod tests {
                 apply_style(&ctx);
                 let mut app = App::new(&ctx);
                 app.mode = mode;
+                if index == 10 {
+                    app.xhs_video = true;
+                }
+                if index == 11 {
+                    app.zhihu_article = true;
+                }
                 if index == 7 {
                     app.douyin_article_mode = true;
                     app.douyin_article = Some(Arc::new(crate::douyin_article::Article {
@@ -732,6 +862,7 @@ mod tests {
                         body: "这是保留分段的文章正文，用于检查预览与导出功能。\n".repeat(100),
                         source: "https://www.douyin.com/note/123".into(),
                         selected: false,
+                        images: vec![],
                     }));
                     app.status = "已获取抖音文字，请核对正文与末尾后确认导出".into();
                 }
