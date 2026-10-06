@@ -90,62 +90,9 @@ fn word_bytes(title: &str, body: &str) -> Result<Vec<u8>> {
     Ok(buffer.into_inner())
 }
 
+mod pdf_layout;
 fn pdf_bytes(title: &str, body: &str) -> Result<Vec<u8>> {
-    use printpdf::{Mm, PdfDocument};
-    let font_path = [
-        r"C:\Windows\Fonts\simhei.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    .into_iter()
-    .find(|path| Path::new(path).is_file())
-    .context("未找到 PDF 中文字体")?;
-    let font_bytes = std::fs::read(font_path)?;
-    let face = ttf_parser::Face::parse(&font_bytes, 0).context("读取 PDF 字体失败")?;
-    let (document, mut page, mut layer) = PdfDocument::new(title, Mm(210.0), Mm(297.0), "文字");
-    let font = document.add_external_font(Cursor::new(&font_bytes))?;
-    let mut y = 276.0;
-    for (text, size, spacing) in [(title, 18.0_f32, 9.0_f32), (body, 11.0, 6.0)] {
-        for paragraph in text.lines() {
-            for line in wrap_line(paragraph, &face, size, 170.0) {
-                if y < 22.0 {
-                    (page, layer) = document.add_page(Mm(210.0), Mm(297.0), "文字");
-                    y = 276.0;
-                }
-                document.get_page(page).get_layer(layer).use_text(
-                    &line,
-                    size,
-                    Mm(20.0),
-                    Mm(y),
-                    &font,
-                );
-                y -= spacing;
-            }
-        }
-        y -= 4.0;
-    }
-    document.save_to_bytes().context("生成 PDF 文件失败")
-}
-
-fn wrap_line(text: &str, face: &ttf_parser::Face<'_>, size: f32, max_mm: f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut width = 0.0;
-    for character in text.chars() {
-        let character = if character == '\t' { ' ' } else { character };
-        let advance = face
-            .glyph_index(character)
-            .and_then(|glyph| face.glyph_hor_advance(glyph))
-            .unwrap_or(face.units_per_em());
-        let mm = advance as f32 / face.units_per_em() as f32 * size * 25.4 / 72.0;
-        if width + mm > max_mm && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-            width = 0.0;
-        }
-        line.push(character);
-        width += mm;
-    }
-    lines.push(line);
-    lines
+    pdf_layout::bytes(title, body)
 }
 
 #[cfg(test)]
@@ -165,6 +112,18 @@ mod tests {
                 TextFormat::Word => assert!(bytes.starts_with(b"PK")),
                 _ => assert!(String::from_utf8(bytes).unwrap().contains(&body)),
             }
+        }
+        if let Ok(source) = std::env::var("SHIWEN_PDF_PREVIEW_SOURCE") {
+            let source = PathBuf::from(source);
+            let body = std::fs::read_to_string(&source).unwrap();
+            let title = source.file_stem().unwrap().to_string_lossy();
+            save(
+                &PathBuf::from("output/pdf/知乎问答-优化排版.pdf"),
+                &title,
+                &body,
+                TextFormat::Pdf,
+            )
+            .unwrap();
         }
         if let Ok(path) = std::env::var("SHIWEN_EXPORT_SMOKE_DIR") {
             let dir = PathBuf::from(path);

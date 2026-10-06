@@ -12,3 +12,5 @@ Microsoft Visual C++ Runtime：Microsoft 可再发行组件，随应用使用。
 
 Node.js 24.19.0：MIT 和随附第三方许可证，见 Node-LICENSE.txt。
 https://github.com/nodejs/node/tree/v24.19.0
+
+Shiwen Sans：根据 Noto Sans SC 生成的静态中文字体，SIL Open Font License 1.1，见 ShiwenSans-OFL.txt。

@@ -21,3 +21,7 @@ Thumbs.db
 /tools/
 
 /runtime/
+
+# Local export previews
+/output/
+/tmp/

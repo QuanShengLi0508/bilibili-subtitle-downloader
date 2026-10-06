@@ -1,6 +1,6 @@
 [package]
 name = "bili-subtitle-downloader"
-version = "1.5.2"
+version = "1.5.3"
 edition = "2021"
 default-run = "bili-subtitle-downloader"
 description = "拾文：字幕提取、视频下载与音视频转文字"
@@ -18,7 +18,7 @@ cookie_store = "0.21"
 html2text = "0.17.1"
 zhihu_sign = "0.1.0"
 docx-rs = "0.4"
-printpdf = { version = "0.7", default-features = false }
+printpdf = { version = "0.7", default-features = false, features = ["font_subsetting"] }
 tempfile = "3"
 ttf-parser = "0.19"
 
