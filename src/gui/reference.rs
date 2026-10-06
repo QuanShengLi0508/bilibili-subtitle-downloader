@@ -3,7 +3,6 @@ use super::*;
 const INK: egui::Color32 = egui::Color32::from_rgb(25, 38, 60);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(101, 116, 139);
 const BLUE: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
-const PALE: egui::Color32 = egui::Color32::from_rgb(248, 248, 248);
 
 #[derive(Clone, Copy)]
 pub(super) enum Symbol {
@@ -252,12 +251,58 @@ impl App {
                         }
                     });
                 }
+                if !self.saved_files.is_empty() {
+                    ui.add_space(20.0);
+                    ui.label(egui::RichText::new("最近文件").size(11.0).color(MUTED));
+                    ui.add_space(6.0);
+                    for path in self.saved_files.clone().into_iter().take(3) {
+                        ui.horizontal(|ui| {
+                            let width = (ui.available_width() - 28.0).max(40.0);
+                            let name = path.file_name().unwrap_or_default().to_string_lossy();
+                            let response = ui
+                                .add_sized(
+                                    [width, 28.0],
+                                    egui::Label::new(
+                                        egui::RichText::new(name).size(12.0).color(INK),
+                                    )
+                                    .truncate()
+                                    .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text(format!("点击打开\n{}", path.display()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if response.clicked() {
+                                if let Err(error) = open_saved_file(&path, false) {
+                                    self.status = format!("打开失败：{error}");
+                                }
+                            }
+                            ui.menu_button("...", |ui| {
+                                if ui.button("打开文件").clicked() {
+                                    if let Err(error) = open_saved_file(&path, false) {
+                                        self.status = format!("打开失败：{error}");
+                                    }
+                                    ui.close_menu();
+                                }
+                                if ui.button("所在位置").clicked() {
+                                    if let Err(error) = open_saved_file(&path, true) {
+                                        self.status = format!("打开失败：{error}");
+                                    }
+                                    ui.close_menu();
+                                }
+                            });
+                        });
+                    }
+                }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(
-                        egui::RichText::new("内容保存在本机")
-                            .size(11.0)
-                            .color(MUTED),
-                    );
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 32.0],
+                            egui::Button::new("输出目录").frame(false),
+                        )
+                        .on_hover_text(self.output_dir.display().to_string())
+                        .clicked()
+                    {
+                        self.output_settings_open = true;
+                    }
                 });
             });
         egui::TopBottomPanel::top("reference_header")
@@ -382,76 +427,6 @@ impl App {
                     });
                 });
             });
-        egui::TopBottomPanel::bottom("reference_footer")
-            .frame(
-                egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
-                    .stroke(egui::Stroke::new(
-                        1.0_f32,
-                        egui::Color32::from_rgb(232, 236, 243),
-                    ))
-                    .inner_margin(egui::Margin::symmetric(margin, 6.0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-                    icon(
-                        ui.painter(),
-                        rect,
-                        Symbol::Folder,
-                        egui::Color32::from_rgb(75, 95, 137),
-                    );
-                    ui.label(egui::RichText::new("输出目录").size(14.0).color(INK));
-                    let width = (ui.available_width() - 178.0).max(60.0);
-                    let path = self.output_dir.display().to_string();
-                    egui::Frame::default()
-                        .fill(egui::Color32::from_gray(250))
-                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(231)))
-                        .rounding(9.0)
-                        .inner_margin(egui::Margin::symmetric(12.0, 6.0))
-                        .show(ui, |ui| {
-                            ui.set_width(width - 24.0);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&path).size(12.0).color(MUTED),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(&path);
-                        });
-                    if secondary_button(ui, "更改", !self.busy) {
-                        if let Some(dir) = rfd::FileDialog::new()
-                            .set_directory(&self.output_dir)
-                            .pick_folder()
-                        {
-                            self.output_dir = dir;
-                        }
-                    }
-                    if secondary_button(ui, "打开", true) {
-                        let result = std::fs::create_dir_all(&self.output_dir).and_then(|_| {
-                            std::process::Command::new("explorer.exe")
-                                .arg(&self.output_dir)
-                                .spawn()
-                        });
-                        if let Err(error) = result {
-                            self.status = format!("打开目录失败: {error}");
-                        }
-                    }
-                });
-            });
-        let show_result = self.busy
-            || !self.saved_files.is_empty()
-            || self.status != "粘贴B站视频链接，然后点「获取」";
-        if show_result {
-            egui::TopBottomPanel::bottom("fixed_results")
-                .frame(
-                    egui::Frame::default()
-                        .fill(PALE)
-                        .inner_margin(egui::Margin::symmetric(margin, 5.0)),
-                )
-                .show(ctx, |ui| self.result_card(ui));
-        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::default()
@@ -478,6 +453,7 @@ impl App {
                                     ui.set_width(ui.available_width());
                                     self.source_card(ui);
                                     self.media_card(ui);
+                                    self.result_card(ui);
                                 });
                         },
                     );
@@ -500,6 +476,43 @@ impl App {
                 });
                 let _ = bottom;
             });
+        if self.output_settings_open {
+            let mut open = self.output_settings_open;
+            egui::Window::new("输出目录")
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(460.0)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("文件保存位置").strong());
+                    ui.add_space(8.0);
+                    ui.add(egui::Label::new(self.output_dir.display().to_string()).truncate())
+                        .on_hover_text(self.output_dir.display().to_string());
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if secondary_button(ui, "更改位置", !self.busy) {
+                            if let Some(dir) = rfd::FileDialog::new()
+                                .set_directory(&self.output_dir)
+                                .pick_folder()
+                            {
+                                self.output_dir = dir;
+                            }
+                        }
+                        if secondary_button(ui, "打开文件夹", true) {
+                            let result = std::fs::create_dir_all(&self.output_dir).and_then(|_| {
+                                std::process::Command::new("explorer.exe")
+                                    .arg(&self.output_dir)
+                                    .spawn()
+                            });
+                            if let Err(error) = result {
+                                self.status = format!("打开目录失败：{error}");
+                            }
+                        }
+                    });
+                });
+            self.output_settings_open = open;
+        }
         self.login_window(ctx);
         if let Some(article) = self.douyin_article.clone() {
             egui::Window::new("图文 / 文章 · 全部文字预览")

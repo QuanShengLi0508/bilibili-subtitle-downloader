@@ -780,91 +780,41 @@ impl App {
     }
 
     pub(super) fn result_card(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::default()
-            .fill(SOFT_BLUE)
-            .rounding(10.0)
-            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    if self.busy {
-                        ui.spinner();
-                    } else {
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                        super::reference::icon(
-                            ui.painter(),
-                            rect,
-                            super::reference::Symbol::Info,
-                            status_color(&self.status),
-                        );
-                    }
-                    let message = if self.status.starts_with("已保存:") {
-                        self.status
-                            .find('（')
-                            .map(|i| format!("保存完成 {}", &self.status[i..]))
-                            .unwrap_or_else(|| "保存完成，可直接打开文件".into())
-                    } else {
-                        self.status.clone()
-                    };
-                    ui.add(egui::Label::new(egui::RichText::new(&message).size(12.0)).truncate())
-                        .on_hover_text(&message);
-                });
-                if let Some(progress) = self.video_progress.filter(|_| self.busy) {
-                    ui.add(
-                        egui::ProgressBar::new(progress as f32)
-                            .desired_width(ui.available_width())
-                            .show_percentage(),
-                    );
-                }
-                for path in self.saved_files.clone() {
-                    ui.horizontal(|ui| {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                        let kind = if path.is_dir() {
-                            "图文".into()
-                        } else {
-                            path.extension()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_uppercase()
-                        };
-                        ui.add_sized(
-                            [40.0, 24.0],
-                            egui::Label::new(
-                                egui::RichText::new(kind)
-                                    .size(11.0)
-                                    .strong()
-                                    .color(ACCENT_DARK),
-                            ),
-                        );
-                        let width = (ui.available_width() - 175.0).max(60.0);
-                        ui.add_sized(
-                            [width, 24.0],
-                            egui::Label::new(egui::RichText::new(filename).size(12.0).color(INK))
-                                .truncate(),
-                        )
-                        .on_hover_text(path.display().to_string());
-                        if secondary_button(
-                            ui,
-                            if path.is_dir() {
-                                "打开文件夹"
-                            } else {
-                                "打开文件"
-                            },
-                            !self.busy,
-                        ) {
-                            if let Err(error) = open_saved_file(&path, false) {
-                                self.status = format!("打开失败: {error}");
-                            }
-                        }
-                        if secondary_button(ui, "所在位置", !self.busy) {
-                            if let Err(error) = open_saved_file(&path, true) {
-                                self.status = format!("打开失败: {error}");
-                            }
-                        }
-                    });
-                }
-            });
+        if self.status == "粘贴B站视频链接，然后点「获取」" && !self.busy {
+            return;
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if self.busy {
+                ui.spinner();
+            } else {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
+                super::reference::icon(
+                    ui.painter(),
+                    rect,
+                    super::reference::Symbol::Info,
+                    status_color(&self.status),
+                );
+            }
+            let message = if self.status.starts_with("已保存:") || self.status.contains("导出完成")
+            {
+                "保存完成，可从左侧最近文件直接打开".into()
+            } else {
+                self.status.clone()
+            };
+            ui.add(
+                egui::Label::new(egui::RichText::new(&message).size(12.0).color(MUTED)).truncate(),
+            )
+            .on_hover_text(&self.status);
+        });
+        if let Some(progress) = self.video_progress.filter(|_| self.busy) {
+            ui.add(
+                egui::ProgressBar::new(progress as f32)
+                    .desired_width(ui.available_width())
+                    .show_percentage(),
+            );
+        }
         self.reveal_result = false;
     }
 
@@ -1059,13 +1009,13 @@ mod tests {
                     assert!(
                         output.shapes.iter().any(|shape| {
                             if let egui::epaint::Shape::Text(text) = &shape.shape {
-                                text.galley.text() == "打开文件"
+                                text.galley.text().contains("界面验证")
                                     && shape.clip_rect.contains(text.pos)
                             } else {
                                 false
                             }
                         }),
-                        "Saved file action must be visible after automatic scrolling"
+                        "Recent saved file must remain visible in the sidebar"
                     );
                 }
                 assert!(
