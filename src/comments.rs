@@ -28,7 +28,9 @@ pub struct Comments {
 pub enum Sort {
     #[default]
     Original,
+    OriginalReverse,
     Likes,
+    LikesAscending,
     Newest,
     Oldest,
 }
@@ -37,9 +39,31 @@ impl Sort {
     pub fn label(self) -> &'static str {
         match self {
             Self::Original => "原始顺序",
+            Self::OriginalReverse => "原始倒序",
             Self::Likes => "点赞最多",
+            Self::LikesAscending => "点赞最少",
             Self::Newest => "最新发布",
             Self::Oldest => "最早发布",
+        }
+    }
+    pub fn options(self) -> (usize, bool) {
+        match self {
+            Self::Original => (0, false),
+            Self::OriginalReverse => (0, true),
+            Self::LikesAscending => (1, false),
+            Self::Likes => (1, true),
+            Self::Oldest => (2, false),
+            Self::Newest => (2, true),
+        }
+    }
+    pub fn from_options(basis: usize, reverse: bool) -> Self {
+        match (basis, reverse) {
+            (1, false) => Self::LikesAscending,
+            (1, true) => Self::Likes,
+            (2, false) => Self::Oldest,
+            (2, true) => Self::Newest,
+            (_, true) => Self::OriginalReverse,
+            _ => Self::Original,
         }
     }
 }
@@ -248,8 +272,15 @@ impl Comments {
             };
             match sort {
                 Sort::Original => a.cmp(b),
-                Sort::Likes => match (x.like_count, y.like_count) {
-                    (Some(x), Some(y)) => y.cmp(&x),
+                Sort::OriginalReverse => b.cmp(a),
+                Sort::Likes | Sort::LikesAscending => match (x.like_count, y.like_count) {
+                    (Some(x), Some(y)) => {
+                        if sort == Sort::Likes {
+                            y.cmp(&x)
+                        } else {
+                            x.cmp(&y)
+                        }
+                    }
                     (Some(_), None) => std::cmp::Ordering::Less,
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     _ => std::cmp::Ordering::Equal,
@@ -291,6 +322,11 @@ impl Comments {
             body.push_str(&format!("页面评论数量：{}\n\n", self.total_label));
         }
         body.push_str("说明：仅包含页面已加载并由你勾选的评论，不代表全部评论。\n\n");
+        if self.items.iter().any(|item| item.likes.contains('+')) {
+            body.push_str(
+                "点赞说明：平台显示的“10+”等为近似值，按显示数值排序，不能还原精确赞数。\n\n",
+            );
+        }
         body.push_str(&format!("排序：{}\n\n", sort.label()));
         for (index, item) in chosen {
             body.push_str(&format!(
@@ -502,6 +538,8 @@ mod tests {
         ]});
         let comments = Comments::from_message(&data.to_string(), url).unwrap();
         assert_eq!(comments.ordered(Sort::Likes), vec![1, 2, 0, 3]);
+        assert_eq!(comments.ordered(Sort::LikesAscending), vec![0, 2, 1, 3]);
+        assert_eq!(comments.ordered(Sort::OriginalReverse), vec![3, 2, 1, 0]);
         assert_eq!(comments.ordered(Sort::Newest), vec![1, 2, 0, 3]);
         assert_eq!(comments.ordered(Sort::Oldest), vec![0, 2, 1, 3]);
         let dir = tempfile::tempdir().unwrap();
@@ -516,5 +554,26 @@ mod tests {
         let text = std::fs::read_to_string(path).unwrap();
         assert!(text.find("第二条末尾").unwrap() < text.find("第一条").unwrap());
         assert!(!text.contains("第三条"));
+        let path = comments
+            .export(
+                &[true, true, false, false],
+                dir.path(),
+                crate::export::TextFormat::Markdown,
+                Sort::LikesAscending,
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.find("第一条").unwrap() < text.find("第二条末尾").unwrap());
+        for sort in [
+            Sort::Original,
+            Sort::OriginalReverse,
+            Sort::Likes,
+            Sort::LikesAscending,
+            Sort::Newest,
+            Sort::Oldest,
+        ] {
+            let (basis, reverse) = sort.options();
+            assert!(Sort::from_options(basis, reverse) == sort);
+        }
     }
 }

@@ -50,10 +50,10 @@
   function visible(node) { return node.getClientRects().length > 0; }
   function text(node) { return (node?.innerText || node?.textContent || '').trim(); }
   function bodyText(node) {
-    if (!node?.querySelector('img[alt]')) return text(node);
+    if (!node?.querySelector('img[alt],img.note-content-emoji')) return text(node);
     const read = n => {
       if (n.nodeType === 3) return n.textContent;
-      if (n.tagName === 'IMG') return n.getAttribute('alt') || '';
+      if (n.tagName === 'IMG') return n.getAttribute('alt') || (n.classList.contains('note-content-emoji') ? '[表情]' : '');
       if (n.tagName === 'BR') return '\n';
       if (['SCRIPT','STYLE'].includes(n.tagName)) return '';
       return [...n.childNodes].map(read).join('') + (['DIV','P'].includes(n.tagName) ? '\n' : '');
@@ -134,6 +134,11 @@
       let reply_to = text(replyNode);
       const parent = item.parentElement?.closest(config.items);
       if (!reply_to && parent && parent !== item) reply_to = text(own(config.author, parent, config.items));
+      if (!reply_to && site === 'xhs' && item.matches('.comment-item-sub,.sub-comment')) {
+        const group = item.closest('.parent-comment');
+        const root = group && [...group.querySelectorAll('.comment-item')].find(n => !n.matches('.comment-item-sub,.sub-comment'));
+        reply_to = root ? text(own(config.author, root, config.items)) : '';
+      }
       if (!reply_to && item.tagName === 'BILI-COMMENT-REPLY-RENDERER') {
         const thread = closestDeep(item, 'bili-comment-thread-renderer');
         const root = thread && all('bili-comment-renderer', thread)[0];

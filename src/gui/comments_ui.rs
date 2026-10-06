@@ -29,9 +29,13 @@ impl App {
                     ui.label(format!("页面数量：{}", comments.total_label));
                 }
                 ui.label(
-                    egui::RichText::new("仅包含页面已加载评论；默认不勾选，确认后才保存。")
-                        .size(12.0)
-                        .color(egui::Color32::GRAY),
+                    egui::RichText::new(if comments.items.iter().any(|c| c.likes.contains('+')) {
+                        "仅包含已加载评论；“10+”等按显示值排序，确认后才保存。"
+                    } else {
+                        "仅包含页面已加载评论；默认不勾选，确认后才保存。"
+                    })
+                    .size(12.0)
+                    .color(egui::Color32::GRAY),
                 );
                 ui.horizontal(|ui| {
                     if ui
@@ -51,14 +55,21 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("排序");
                     let before = self.comment_sort;
-                    for sort in [
-                        crate::comments::Sort::Original,
-                        crate::comments::Sort::Likes,
-                        crate::comments::Sort::Newest,
-                        crate::comments::Sort::Oldest,
-                    ] {
-                        ui.selectable_value(&mut self.comment_sort, sort, sort.label());
-                    }
+                    let (mut basis, mut reverse) = self.comment_sort.options();
+                    egui::ComboBox::from_id_salt("comment_sort_basis")
+                        .width(120.0)
+                        .selected_text(["原始顺序", "点赞数", "发布时间"][basis])
+                        .show_ui(ui, |ui| {
+                            for (index, label) in
+                                ["原始顺序", "点赞数", "发布时间"].iter().enumerate()
+                            {
+                                ui.selectable_value(&mut basis, index, *label);
+                            }
+                        });
+                    ui.selectable_value(&mut reverse, false, "正序 ↑");
+                    ui.selectable_value(&mut reverse, true, "倒序 ↓");
+                    self.comment_sort = crate::comments::Sort::from_options(basis, reverse);
+                    ui.label(self.comment_sort.label());
                     if before != self.comment_sort {
                         self.comment_page = 0;
                     }

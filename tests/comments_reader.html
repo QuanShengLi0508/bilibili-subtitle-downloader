@@ -41,6 +41,16 @@ run('小红书评论与楼中楼',()=>{
   assert(data.comments.length===2&&data.comments[0].body==='主评论最后一段','不能把楼中楼拼进主评论');
   assert(data.comments[1].reply_to==='小红书作者','回复上下文');
 });
+run('小红书实际同级回复容器与纯表情',()=>{
+  set('<div class="comments-container"><div class="total">共 748 条评论</div><div class="parent-comment"><div id="comment-123" class="comment-item"><div class="author"><a class="name">主评论作者</a></div><div class="content"><span class="note-text">主评论末尾<img class="note-content-emoji"></span></div><div class="date">09-10安徽</div><div class="like"><span class="count">10+</span></div></div><div class="reply-container"><div class="list-container"><div id="comment-456" class="comment-item comment-item-sub"><div class="author"><a class="name">回复作者</a></div><div class="content"><span class="note-text"><img class="note-content-emoji"></span></div><div class="date">1天前湖南</div><div class="like"><span class="count">2</span></div></div></div></div></div></div>');
+  const data=get('www.xiaohongshu.com','/explore/123456789012345678901234');
+  assert(data.comments.length===2,'容器不能吞掉主评论或表情评论');
+  assert(data.comments[0].body==='主评论末尾[表情]','无名称表情不能丢失');
+  assert(data.comments[1].body==='[表情]'&&data.comments[1].reply_to==='主评论作者','同级回复应关联主评论');
+  assert(data.comments[0].likes==='10+'&&data.comments[0].like_count===10,'保留平台显示的近似赞数');
+  assert(data.comments[1].posted_at!==null,'日期含地区时仍可排序');
+  assert(data.total_label==='共 748 条评论','总数不能当作已加载数');
+});
 run('知乎评论区别于答案正文',()=>{
   set('<div class="AnswerItem"><div class="AuthorInfo-name">回答作者</div><div class="RichText">答案正文不得当作评论</div><div class="CommentTopbar-title">12 条评论</div><div class="CommentItemV2"><a class="UserLink-link">评论作者</a><div class="CommentContent">评论完整末尾</div><div class="CommentItemV2-time">昨天 10:00</div><button class="CommentItemV2-likeButton">8</button></div></div>');
   const data=get('www.zhihu.com','/question/123/answer/456');
