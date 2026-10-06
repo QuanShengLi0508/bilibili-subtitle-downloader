@@ -1035,7 +1035,7 @@ fn load_media_options(
 mod layout;
 mod reference;
 
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(40, 106, 232);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
 
 fn recent_saved_file(dir: &std::path::Path) -> Option<PathBuf> {
     std::fs::read_dir(dir)
@@ -1072,7 +1072,7 @@ fn open_saved_file(path: &std::path::Path, select: bool) -> Result<()> {
     command.spawn()?;
     Ok(())
 }
-const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(31, 84, 185);
+const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(45, 45, 45);
 
 fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     ui.add_enabled(
@@ -1084,8 +1084,8 @@ fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
         )
         .fill(ACCENT)
         .stroke(egui::Stroke::NONE)
-        .min_size(egui::vec2(116.0, 38.0))
-        .rounding(8.0),
+        .min_size(egui::vec2(128.0, 40.0))
+        .rounding(10.0),
     )
     .clicked()
 }
@@ -1094,10 +1094,10 @@ fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     ui.add_enabled(
         enabled,
         egui::Button::new(egui::RichText::new(label).size(12.0).color(ACCENT_DARK))
-            .fill(egui::Color32::from_rgb(239, 245, 255))
+            .fill(egui::Color32::from_gray(245))
             .stroke(egui::Stroke::NONE)
-            .min_size(egui::vec2(72.0, 32.0))
-            .rounding(8.0),
+            .min_size(egui::vec2(78.0, 34.0))
+            .rounding(9.0),
     )
     .clicked()
 }
@@ -1121,11 +1121,11 @@ fn status_color(status: &str) -> egui::Color32 {
 fn apply_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::light();
-    style.visuals.panel_fill = egui::Color32::from_rgb(245, 248, 252);
+    style.visuals.panel_fill = egui::Color32::WHITE;
     style.visuals.window_fill = egui::Color32::WHITE;
-    style.visuals.override_text_color = Some(egui::Color32::from_rgb(31, 45, 65));
-    style.visuals.extreme_bg_color = egui::Color32::from_rgb(247, 250, 255);
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(209, 228, 255);
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(25, 38, 60));
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(250, 251, 253);
+    style.visuals.selection.bg_fill = egui::Color32::from_gray(225);
     style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT);
     style.visuals.hyperlink_color = ACCENT_DARK;
     for (text_style, size) in [
@@ -1138,14 +1138,14 @@ fn apply_style(ctx: &egui::Context) {
             .text_styles
             .insert(text_style, egui::FontId::proportional(size));
     }
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(243, 247, 253);
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_gray(250);
     style.visuals.widgets.inactive.bg_stroke =
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(216, 226, 239));
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(225));
     style.visuals.widgets.inactive.rounding = egui::Rounding::same(7.0);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(229, 240, 255);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_gray(241);
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
     style.visuals.widgets.hovered.rounding = egui::Rounding::same(7.0);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(211, 230, 255);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_gray(232);
     style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
     style.visuals.widgets.active.rounding = egui::Rounding::same(7.0);
     style.visuals.window_rounding = egui::Rounding::same(14.0);

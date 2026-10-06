@@ -1,9 +1,9 @@
 use super::*;
 
-const INK: egui::Color32 = egui::Color32::from_rgb(20, 36, 73);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(119, 139, 173);
-const BLUE: egui::Color32 = egui::Color32::from_rgb(26, 115, 255);
-const PALE: egui::Color32 = egui::Color32::from_rgb(233, 243, 255);
+const INK: egui::Color32 = egui::Color32::from_rgb(25, 38, 60);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(101, 116, 139);
+const BLUE: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
+const PALE: egui::Color32 = egui::Color32::from_rgb(248, 248, 248);
 
 #[derive(Clone, Copy)]
 pub(super) enum Symbol {
@@ -98,53 +98,6 @@ pub(super) fn icon(
     }
 }
 
-pub(super) fn gradient(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    radius: f32,
-    top: egui::Color32,
-    bottom: egui::Color32,
-) {
-    let radius = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
-    let color = |y: f32| {
-        let t = ((y - rect.top()) / rect.height()).clamp(0.0, 1.0);
-        egui::Color32::from_rgb(
-            (top.r() as f32 * (1.0 - t) + bottom.r() as f32 * t) as u8,
-            (top.g() as f32 * (1.0 - t) + bottom.g() as f32 * t) as u8,
-            (top.b() as f32 * (1.0 - t) + bottom.b() as f32 * t) as u8,
-        )
-    };
-    let mut mesh = egui::epaint::Mesh::default();
-    mesh.colored_vertex(rect.center(), color(rect.center().y));
-    for (center, start) in [
-        (
-            egui::pos2(rect.right() - radius, rect.top() + radius),
-            -90.0_f32,
-        ),
-        (
-            egui::pos2(rect.right() - radius, rect.bottom() - radius),
-            0.0,
-        ),
-        (
-            egui::pos2(rect.left() + radius, rect.bottom() - radius),
-            90.0,
-        ),
-        (egui::pos2(rect.left() + radius, rect.top() + radius), 180.0),
-    ] {
-        for step in 0..=12 {
-            let angle = (start + 90.0 * step as f32 / 12.0).to_radians();
-            let point = center + egui::vec2(angle.cos() * radius, angle.sin() * radius);
-            mesh.colored_vertex(point, color(point.y));
-        }
-    }
-    let count = mesh.vertices.len() as u32;
-    for i in 1..count {
-        mesh.indices
-            .extend([0, i, if i + 1 == count { 1 } else { i + 1 }]);
-    }
-    painter.add(egui::Shape::mesh(mesh));
-}
-
 pub(super) fn wide_button(
     ui: &mut egui::Ui,
     label: &str,
@@ -154,21 +107,18 @@ pub(super) fn wide_button(
 ) -> bool {
     ui.add_enabled_ui(enabled, |ui| {
         let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(width, 46.0), egui::Sense::click());
-        let (top, bottom) = if !ui.is_enabled() {
-            (
-                egui::Color32::from_rgb(150, 191, 255),
-                egui::Color32::from_rgb(116, 169, 255),
-            )
-        } else if response.hovered() {
-            (
-                egui::Color32::from_rgb(51, 141, 255),
-                egui::Color32::from_rgb(11, 99, 245),
-            )
-        } else {
-            (egui::Color32::from_rgb(77, 154, 255), BLUE)
-        };
-        gradient(ui.painter(), rect, 11.0, top, bottom);
+            ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
+        ui.painter().rect_filled(
+            rect,
+            12.0,
+            if !ui.is_enabled() {
+                egui::Color32::from_gray(207)
+            } else if response.hovered() {
+                egui::Color32::from_gray(62)
+            } else {
+                BLUE
+            },
+        );
         let galley = ui.painter().layout_no_wrap(
             label.into(),
             egui::FontId::proportional(17.0),
@@ -201,6 +151,8 @@ pub(super) fn wide_button(
 impl App {
     pub(super) fn render_reference(&mut self, ctx: &egui::Context) {
         self.poll_messages(ctx);
+        let compact = ctx.screen_rect().height() < 680.0;
+        let margin = if compact { 16.0 } else { 24.0 };
         if self.busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -219,22 +171,128 @@ impl App {
                 }
             }
         }
-        egui::TopBottomPanel::top("reference_header")
+        egui::SidePanel::left("platform_sidebar")
+            .exact_width(if ctx.screen_rect().width() < 900.0 {
+                142.0
+            } else {
+                178.0
+            })
+            .resizable(false)
             .frame(
                 egui::Frame::default()
-                    .fill(egui::Color32::from_rgb(247, 250, 255))
-                    .inner_margin(egui::Margin::symmetric(20.0, 8.0)),
+                    .fill(egui::Color32::from_rgb(249, 249, 249))
+                    .inner_margin(egui::Margin::symmetric(12.0, 16.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.image((self.logo.id(), egui::vec2(44.0, 44.0)));
-                    ui.add_space(8.0);
+                    ui.image((self.logo.id(), egui::vec2(28.0, 28.0)));
+                    ui.label(egui::RichText::new("拾文").size(20.0).strong().color(INK));
+                });
+                ui.add_space(23.0);
+                ui.label(egui::RichText::new("内容平台").size(11.0).color(MUTED));
+                ui.add_space(7.0);
+                for (mode, label, symbol) in [
+                    (Mode::Subtitle, "哔哩哔哩", Symbol::Play),
+                    (Mode::Douyin, "抖音", Symbol::Play),
+                    (Mode::Xhs, "小红书", Symbol::Document),
+                    (Mode::Youtube, "YouTube", Symbol::Play),
+                    (Mode::WebText, "知乎", Symbol::Document),
+                    (Mode::Transcribe, "本地转写", Symbol::Wave),
+                ] {
+                    let selected = self.mode == mode
+                        || (mode == Mode::Subtitle
+                            && matches!(self.mode, Mode::Video | Mode::BiliText));
+                    ui.add_enabled_ui(!self.busy, |ui| {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 37.0),
+                            egui::Sense::click(),
+                        );
+                        if selected || response.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
+                                8.0,
+                                egui::Color32::from_gray(if selected { 233 } else { 241 }),
+                            );
+                        }
+                        let color = if selected { INK } else { MUTED };
+                        icon(
+                            ui.painter(),
+                            egui::Rect::from_center_size(
+                                egui::pos2(rect.left() + 17.0, rect.center().y),
+                                egui::vec2(17.0, 17.0),
+                            ),
+                            symbol,
+                            color,
+                        );
+                        ui.painter().text(
+                            egui::pos2(rect.left() + 35.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            egui::FontId::proportional(13.0),
+                            color,
+                        );
+                        if response.clicked()
+                            || (response.has_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                        {
+                            if !selected {
+                                self.mode = mode;
+                                self.status = if mode == Mode::Transcribe {
+                                    "选择音频或视频文件，然后开始识别"
+                                } else {
+                                    "粘贴链接，选择内容类型后获取"
+                                }
+                                .into();
+                                self.youtube = None;
+                                self.external = None;
+                                self.video = None;
+                                self.douyin_article = None;
+                                self.zhihu_content = None;
+                            }
+                        }
+                    });
+                }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.label(
+                        egui::RichText::new("内容保存在本机")
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                });
+            });
+        egui::TopBottomPanel::top("reference_header")
+            .frame(
+                egui::Frame::default()
+                    .fill(egui::Color32::WHITE)
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgb(232, 236, 243),
+                    ))
+                    .inner_margin(egui::Margin::symmetric(
+                        margin,
+                        if compact { 8.0 } else { 12.0 },
+                    )),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("拾文").size(25.0).strong().color(INK));
+                        let title = match self.mode {
+                            Mode::Subtitle | Mode::Video | Mode::BiliText => "哔哩哔哩",
+                            Mode::Douyin => "抖音",
+                            Mode::Xhs => "小红书",
+                            Mode::Youtube => "YouTube",
+                            Mode::WebText => "知乎",
+                            Mode::Transcribe => "本地转写",
+                        };
+                        ui.label(egui::RichText::new(title).size(17.0).strong().color(INK));
                         ui.label(
-                            egui::RichText::new("字幕提取 · 视频下载 · 音视频转文字")
-                                .size(14.0)
-                                .color(MUTED),
+                            egui::RichText::new(if self.mode == Mode::Transcribe {
+                                "音频与视频，整理成文字"
+                            } else {
+                                "保存视频、图文和文字"
+                            })
+                            .size(11.0)
+                            .color(MUTED),
                         );
                     });
                     ui.add_space((ui.available_width() - 150.0).max(0.0));
@@ -296,6 +354,13 @@ impl App {
                                     .size(11.0)
                                     .color(MUTED),
                                 );
+                            } else if self.mode == Mode::Transcribe {
+                                ui.label(egui::RichText::new("本地处理").size(12.0).color(BLUE));
+                                ui.label(
+                                    egui::RichText::new("无需登录，选择文件即可")
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
                             } else if self.logged_in {
                                 if secondary_button(ui, "退出登录", !self.busy) {
                                     Client::clear_saved_cookies();
@@ -316,94 +381,16 @@ impl App {
                         });
                     });
                 });
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 5.0 * ui.spacing().item_spacing.x) / 6.0;
-                    for (mode, label, compact, symbol) in [
-                        (Mode::Subtitle, "哔哩哔哩", "哔哩哔哩", Symbol::Play),
-                        (Mode::Douyin, "抖音", "抖音", Symbol::Play),
-                        (Mode::Xhs, "小红书", "小红书", Symbol::Document),
-                        (Mode::Youtube, "YouTube", "YouTube", Symbol::Play),
-                        (
-                            Mode::Transcribe,
-                            "音频/视频转文字",
-                            "本地转写",
-                            Symbol::Wave,
-                        ),
-                        (Mode::WebText, "知乎", "知乎", Symbol::Document),
-                    ] {
-                        let selected = self.mode == mode
-                            || (mode == Mode::Subtitle
-                                && matches!(self.mode, Mode::Video | Mode::BiliText));
-                        let label = if width < 190.0 { compact } else { label };
-                        ui.add_enabled_ui(!self.busy, |ui| {
-                            let (rect, response) = ui
-                                .allocate_exact_size(egui::vec2(width, 36.0), egui::Sense::click());
-                            if selected {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    10.0,
-                                    egui::Color32::from_rgb(226, 239, 255),
-                                );
-                                ui.painter().line_segment(
-                                    [
-                                        rect.left_bottom() + egui::vec2(12.0, -1.0),
-                                        rect.right_bottom() + egui::vec2(-12.0, -1.0),
-                                    ],
-                                    egui::Stroke::new(2.0_f32, BLUE),
-                                );
-                            } else if response.hovered() {
-                                ui.painter().rect_filled(rect, 10.0, PALE);
-                            }
-                            let color = if selected {
-                                BLUE
-                            } else {
-                                egui::Color32::from_rgb(54, 75, 112)
-                            };
-                            icon(
-                                ui.painter(),
-                                egui::Rect::from_center_size(
-                                    egui::pos2(rect.left() + 24.0, rect.center().y),
-                                    egui::vec2(21.0, 21.0),
-                                ),
-                                symbol,
-                                color,
-                            );
-                            ui.painter().text(
-                                egui::pos2(rect.left() + 43.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                label,
-                                egui::FontId::proportional(if width < 150.0 {
-                                    12.0
-                                } else if width < 190.0 {
-                                    14.0
-                                } else {
-                                    16.0
-                                }),
-                                color,
-                            );
-                            if response.clicked()
-                                || (response.has_focus()
-                                    && ui.input(|input| input.key_pressed(egui::Key::Enter)))
-                            {
-                                if !selected {
-                                    self.mode = mode;
-                                    self.youtube = None;
-                                    self.external = None;
-                                    self.video = None;
-                                    self.douyin_article = None;
-                                    self.zhihu_content = None;
-                                }
-                            }
-                        });
-                    }
-                });
             });
         egui::TopBottomPanel::bottom("reference_footer")
             .frame(
                 egui::Frame::default()
-                    .fill(egui::Color32::from_rgb(238, 245, 255))
-                    .inner_margin(egui::Margin::symmetric(20.0, 6.0)),
+                    .fill(egui::Color32::WHITE)
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgb(232, 236, 243),
+                    ))
+                    .inner_margin(egui::Margin::symmetric(margin, 6.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -419,11 +406,8 @@ impl App {
                     let width = (ui.available_width() - 178.0).max(60.0);
                     let path = self.output_dir.display().to_string();
                     egui::Frame::default()
-                        .fill(egui::Color32::from_rgb(247, 250, 255))
-                        .stroke(egui::Stroke::new(
-                            1.0_f32,
-                            egui::Color32::from_rgb(214, 228, 249),
-                        ))
+                        .fill(egui::Color32::from_gray(250))
+                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(231)))
                         .rounding(9.0)
                         .inner_margin(egui::Margin::symmetric(12.0, 6.0))
                         .show(ui, |ui| {
@@ -456,34 +440,48 @@ impl App {
                     }
                 });
             });
-        egui::TopBottomPanel::bottom("fixed_results")
-            .frame(
-                egui::Frame::default()
-                    .fill(PALE)
-                    .inner_margin(egui::Margin::symmetric(20.0, 5.0)),
-            )
-            .show(ctx, |ui| self.result_card(ui));
+        let show_result = self.busy
+            || !self.saved_files.is_empty()
+            || self.status != "粘贴B站视频链接，然后点「获取」";
+        if show_result {
+            egui::TopBottomPanel::bottom("fixed_results")
+                .frame(
+                    egui::Frame::default()
+                        .fill(PALE)
+                        .inner_margin(egui::Margin::symmetric(margin, 5.0)),
+                )
+                .show(ctx, |ui| self.result_card(ui));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::default()
-                    .fill(PALE)
-                    .inner_margin(egui::Margin::symmetric(20.0, 8.0)),
+                    .fill(egui::Color32::WHITE)
+                    .inner_margin(egui::Margin::symmetric(
+                        margin,
+                        if compact { 10.0 } else { 16.0 },
+                    )),
             )
             .show(ctx, |ui| {
                 let bottom = ui.max_rect().bottom();
-                egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
-                    .stroke(egui::Stroke::new(
-                        1.0_f32,
-                        egui::Color32::from_rgb(218, 233, 255),
-                    ))
-                    .rounding(14.0)
-                    .inner_margin(egui::Margin::same(8.0))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        self.source_card(ui);
-                        self.media_card(ui);
-                    });
+                ui.horizontal(|ui| {
+                    let width = ui.available_width().min(780.0);
+                    ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 0.0),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
+                            ui.set_width(width);
+                            egui::Frame::default()
+                                .fill(egui::Color32::WHITE)
+                                .inner_margin(egui::Margin::same(if compact { 4.0 } else { 10.0 }))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    self.source_card(ui);
+                                    self.media_card(ui);
+                                });
+                        },
+                    );
+                });
                 #[cfg(test)]
                 if ui.min_rect().bottom() > bottom + 1.0 {
                     eprintln!(
@@ -524,12 +522,9 @@ impl App {
             .fill(if hovered {
                 egui::Color32::from_rgb(227, 240, 255)
             } else {
-                egui::Color32::from_rgb(243, 248, 255)
+                egui::Color32::from_gray(250)
             })
-            .stroke(egui::Stroke::new(
-                1.0_f32,
-                egui::Color32::from_rgb(193, 217, 255),
-            ))
+            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(222)))
             .rounding(13.0)
             .inner_margin(egui::Margin::same(14.0))
             .show(ui, |ui| {
@@ -538,7 +533,7 @@ impl App {
                     ui.cursor().min,
                     egui::vec2(ui.available_width(), 70.0),
                 );
-                dashed_border(ui.painter(), rect, egui::Color32::from_rgb(174, 206, 255));
+                dashed_border(ui.painter(), rect, egui::Color32::from_gray(218));
                 ui.horizontal(|ui| {
                     let (icon_rect, _) =
                         ui.allocate_exact_size(egui::vec2(38.0, 70.0), egui::Sense::hover());
