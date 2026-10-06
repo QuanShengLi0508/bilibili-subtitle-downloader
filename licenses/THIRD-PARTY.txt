@@ -14,3 +14,11 @@ Node.js 24.19.0：MIT 和随附第三方许可证，见 Node-LICENSE.txt。
 https://github.com/nodejs/node/tree/v24.19.0
 
 Shiwen Sans：根据 Noto Sans SC 生成的静态中文字体，SIL Open Font License 1.1，见 ShiwenSans-OFL.txt。
+
+sherpa-onnx 1.13.8：Apache-2.0，见 SherpaOnnx-Apache-2.0.txt。
+https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8
+ONNX Runtime 1.28.2：MIT，见 OnnxRuntime-MIT.txt。
+pyannote segmentation 3.0 的 sherpa-onnx ONNX 转换模型：MIT，见 Speaker-Segmentation-MIT.txt。
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-segmentation-models
+3D-Speaker ERes2Net 中文声纹特征模型：Apache-2.0，见 3D-Speaker-Apache-2.0.txt。
+https://github.com/alibaba-damo-academy/3D-Speaker

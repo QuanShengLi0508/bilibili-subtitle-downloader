@@ -1,7 +1,7 @@
 ﻿; Build from the repository root with Inno Setup 6:
 ;   ISCC.exe installer\installer.iss
 #define MyAppName "拾文"
-#define MyAppVersion "1.5.5"
+#define MyAppVersion "1.5.6"
 #define MyAppPublisher "QuanShengLi0508"
 #define MyAppExeName "拾文.exe"
 
@@ -14,7 +14,7 @@ DefaultDirName={localappdata}\Programs\BilibiliSubtitleVideoDownloader
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=Shiwen-1.5.5-Setup-x64
+OutputBaseFilename=Shiwen-1.5.6-Setup-x64
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
@@ -43,6 +43,7 @@ Source: "..\tools\ffprobe.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\whisper\*.dll"; DestDir: "{app}\whisper"; Flags: ignoreversion
 Source: "..\runtime\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\runtime\*.dll"; DestDir: "{app}\whisper"; Flags: ignoreversion
+Source: "..\diarization\*"; DestDir: "{app}\diarization"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]

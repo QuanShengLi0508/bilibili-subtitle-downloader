@@ -18,6 +18,7 @@ fn load_cookie_store() -> Arc<CookieStoreMutex> {
     Arc::new(CookieStoreMutex::new(store))
 }
 
+#[derive(Clone)]
 pub struct VideoInfo {
     pub aid: i64,
     pub bvid: String,

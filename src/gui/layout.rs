@@ -236,6 +236,41 @@ impl App {
                 }
             }
 
+            if self.mode == Mode::Subtitle {
+                ui.add_space(6.0);
+                let before = self.bili_local_transcribe;
+                ui.add_enabled_ui(!self.busy, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("识别方式");
+                        choice(
+                            ui,
+                            &mut self.bili_local_transcribe,
+                            false,
+                            "直接获取 AI / 原字幕",
+                        );
+                        choice(
+                            ui,
+                            &mut self.bili_local_transcribe,
+                            true,
+                            "下载音频 · 本地识别",
+                        );
+                    });
+                });
+                if before != self.bili_local_transcribe {
+                    self.video = None;
+                    self.tracks.clear();
+                    self.streams.clear();
+                    self.status = "已切换识别方式，请重新获取视频信息".into();
+                }
+                caption(
+                    ui,
+                    if self.bili_local_transcribe {
+                        "只下载当前分P音频，本地转写可区分说话人。"
+                    } else {
+                        "使用 B站现有字幕，此方式不区分说话人。"
+                    },
+                );
+            }
             if (!matches!(self.mode, Mode::Video | Mode::Douyin)
                 || ((self.mode == Mode::Douyin && self.douyin_article_mode)
                     || self.mode == Mode::BiliText)
@@ -343,10 +378,12 @@ impl App {
                 } else {
                     caption(ui, "先获取回答数量，再选择范围与格式；获取时不会保存文件。");
                 }
-            } else if self.mode == Mode::Transcribe {
+            } else if self.mode == Mode::Transcribe
+                || self.mode == Mode::Subtitle && self.bili_local_transcribe
+            {
                 ui.add_space(6.0);
                 ui.add_enabled_ui(!self.busy, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("识别语言");
                         egui::ComboBox::from_id_salt("transcribe_language")
                             .selected_text(match self.transcribe_language.as_str() {
@@ -361,6 +398,26 @@ impl App {
                                     choice(ui, &mut self.transcribe_language, value.into(), label);
                                 }
                             });
+                        ui.checkbox(&mut self.speaker_diarization, "区分说话人");
+                        if self.speaker_diarization {
+                            egui::ComboBox::from_id_salt("speaker_count")
+                                .width(95.0)
+                                .selected_text(if self.speaker_count == 0 {
+                                    "人数：自动".into()
+                                } else {
+                                    format!("{} 人", self.speaker_count)
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.speaker_count, 0, "自动判断人数");
+                                    for count in 1..=12 {
+                                        ui.selectable_value(
+                                            &mut self.speaker_count,
+                                            count,
+                                            format!("{count} 人"),
+                                        );
+                                    }
+                                });
+                        }
                     });
                 });
             }
@@ -446,7 +503,13 @@ impl App {
                 };
             let action = match self.mode {
                 Mode::Youtube => "获取视频与字幕列表",
-                Mode::Subtitle => "获取字幕",
+                Mode::Subtitle => {
+                    if self.bili_local_transcribe {
+                        "获取视频信息"
+                    } else {
+                        "获取字幕"
+                    }
+                }
                 Mode::Video => "获取视频",
                 Mode::Xhs => {
                     if self.xhs_video {
@@ -567,7 +630,13 @@ impl App {
                                 "先获取 → 下载视频或选择语言导出字幕；无字幕可用本地转写"
                             }
                             Mode::BiliText => "先获取图文 → 核对预览 → 确认导出",
-                            Mode::Subtitle => "AI 字幕需要登录后获取，支持多种文档格式",
+                            Mode::Subtitle => {
+                                if self.bili_local_transcribe {
+                                    "获取视频信息 → 选择分P → 下载音频并本地识别"
+                                } else {
+                                    "AI 字幕需要登录后获取，支持多种文档格式"
+                                }
+                            }
                             Mode::Video => "高画质视频需要登录 B站，输出为 MP4",
                             Mode::Douyin if self.douyin_article_mode => {
                                 "先获取文字 → 核对全文预览 → 确认导出"
@@ -754,6 +823,14 @@ impl App {
                 if !self.ffmpeg_ok {
                     caption(ui, "音视频合并组件未就绪，部分画质暂不可下载。");
                 }
+            } else if self.mode == Mode::Subtitle && self.bili_local_transcribe {
+                if primary_button(ui, "下载音频并本地识别", !self.busy && self.ffmpeg_ok) {
+                    self.spawn_bili_transcribe();
+                }
+                caption(
+                    ui,
+                    "保存音频、所选文档格式与 SRT；说话人编号不代表真实身份。",
+                );
             } else if !self.tracks.is_empty() {
                 ui.add_enabled_ui(!self.busy, |ui| {
                     ui.horizontal(|ui| {
@@ -891,6 +968,7 @@ mod tests {
                 Mode::BiliText,
                 Mode::Xhs,
                 Mode::WebText,
+                Mode::Subtitle,
             ]
             .into_iter()
             .enumerate()
@@ -900,6 +978,9 @@ mod tests {
                 apply_style(&ctx);
                 let mut app = App::new(&ctx);
                 app.mode = mode;
+                if index == 14 {
+                    app.bili_local_transcribe = true;
+                }
                 if mode == Mode::Youtube {
                     app.youtube_subtitles = index == 10;
                     app.youtube = Some(crate::youtube::Video {

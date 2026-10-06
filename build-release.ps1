@@ -5,6 +5,12 @@ $env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA 'BiliSubtitleDownloader\buil
 
 Push-Location $projectRoot
 try {
+    foreach ($required in @('sherpa-onnx-offline-speaker-diarization.exe','segmentation.onnx','embedding.onnx')) {
+        if (!(Test-Path -LiteralPath (Join-Path $projectRoot "diarization\$required"))) {
+            & (Join-Path $projectRoot 'scripts\prepare-speakers.ps1')
+            break
+        }
+    }
     cargo build --release --bins
     if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
 
@@ -38,6 +44,7 @@ try {
     Copy-Item -Path (Join-Path $projectRoot 'whisper\*.dll') -Destination (Join-Path $packageDir 'whisper') -Force
     Copy-Item -Path (Join-Path $projectRoot 'runtime\*.dll') -Destination $packageDir -Force
     Copy-Item -Path (Join-Path $projectRoot 'runtime\*.dll') -Destination (Join-Path $packageDir 'whisper') -Force
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'diarization') -Destination $packageDir -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses') -Destination $packageDir -Recurse -Force
     Write-Host "Release ready: $rootExe"
     Write-Host "Package ready: $packageDir"

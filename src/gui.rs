@@ -99,6 +99,9 @@ struct App {
     saved_files: Vec<PathBuf>,
     reveal_result: bool,
     transcribe_language: String,
+    speaker_diarization: bool,
+    speaker_count: usize,
+    bili_local_transcribe: bool,
     zhihu_from: String,
     zhihu_to: String,
     zhihu_all_answers: bool,
@@ -334,6 +337,9 @@ impl App {
             saved_files: recent_saved_file(&default_output).into_iter().collect(),
             reveal_result: false,
             transcribe_language: "auto".into(),
+            speaker_diarization: true,
+            speaker_count: 0,
+            bili_local_transcribe: false,
             zhihu_from: String::new(),
             zhihu_to: String::new(),
             zhihu_all_answers: true,
@@ -468,11 +474,21 @@ impl App {
         self.selected_stream = 0;
         self.status = "正在获取视频信息和画质列表...".into();
         let tx = self.tx.clone();
+        let local_audio = self.mode == Mode::Subtitle && self.bili_local_transcribe;
         thread::spawn(move || {
             let client = Client::new();
             match client.fetch_video(&input) {
                 Ok((video, page)) => {
-                    let (tracks, streams, errors) = load_media_options(&client, &video, page);
+                    let (tracks, streams, errors) = if local_audio {
+                        match client.fetch_streams(&video, page) {
+                            Ok(streams) => (vec![], streams, vec![]),
+                            Err(error) => {
+                                (vec![], vec![], vec![format!("获取音频信息失败：{error:#}")])
+                            }
+                        }
+                    } else {
+                        load_media_options(&client, &video, page)
+                    };
                     let _ = tx.send(Msg::VideoLoaded(
                         Box::new(video),
                         page,
@@ -513,9 +529,17 @@ impl App {
         self.selected_track = 0;
         self.selected_stream = 0;
         let tx = self.tx.clone();
+        let local_audio = self.mode == Mode::Subtitle && self.bili_local_transcribe;
         thread::spawn(move || {
             let client = Client::new();
-            let (tracks, streams, errors) = load_media_options(&client, &video, page);
+            let (tracks, streams, errors) = if local_audio {
+                match client.fetch_streams(&video, page) {
+                    Ok(streams) => (vec![], streams, vec![]),
+                    Err(error) => (vec![], vec![], vec![format!("获取音频信息失败：{error:#}")]),
+                }
+            } else {
+                load_media_options(&client, &video, page)
+            };
             let _ = tx.send(Msg::TracksLoaded(page, tracks, streams, errors));
         });
     }
@@ -664,8 +688,15 @@ impl App {
         self.busy = true;
         self.status = "正在转换音频并识别文字...".into();
         let text_format = self.text_format;
+        let options = transcribe::SpeakerOptions {
+            enabled: self.speaker_diarization,
+            count: self.speaker_count,
+        };
         thread::spawn(move || {
-            let res = transcribe::run(&media, &model, &language, &dir).and_then(|paths| {
+            let res = transcribe::run(&media, &model, &language, &dir, options, &|s| {
+                let _ = tx.send(Msg::VideoStage(s.into()));
+            })
+            .and_then(|paths| {
                 paths
                     .into_iter()
                     .map(|path| {
@@ -678,6 +709,52 @@ impl App {
                     .collect()
             });
             let _ = tx.send(Msg::TranscribeSaved(res));
+        });
+    }
+
+    fn spawn_bili_transcribe(&mut self) {
+        let Some(video) = self.video.clone() else {
+            return;
+        };
+        let page = self.selected_page;
+        let language = self.transcribe_language.clone();
+        let dir = self.output_dir.clone();
+        let format = self.text_format;
+        let options = transcribe::SpeakerOptions {
+            enabled: self.speaker_diarization,
+            count: self.speaker_count,
+        };
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.video_progress = None;
+        self.status = "正在准备音频本地转写…".into();
+        thread::spawn(move || {
+            let result = transcribe::run_bili(
+                &video,
+                page,
+                &language,
+                &dir,
+                options,
+                &|s| {
+                    let _ = tx.send(Msg::VideoStage(s.into()));
+                },
+                &|p| {
+                    let _ = tx.send(Msg::VideoProgress(p));
+                },
+            )
+            .and_then(|paths| {
+                paths
+                    .into_iter()
+                    .map(|path| {
+                        if path.extension().and_then(|s| s.to_str()) == Some("txt") {
+                            export::convert(&path, format)
+                        } else {
+                            Ok(path)
+                        }
+                    })
+                    .collect()
+            });
+            let _ = tx.send(Msg::TranscribeSaved(result));
         });
     }
 
@@ -960,7 +1037,12 @@ impl App {
                     self.selected_track = 0;
                     self.streams = streams;
                     self.selected_stream = 0;
-                    if !errors.is_empty() {
+                    if self.mode == Mode::Subtitle
+                        && self.bili_local_transcribe
+                        && errors.is_empty()
+                    {
+                        self.status = "已获取视频，可选择分P并下载音频本地转写".into();
+                    } else if !errors.is_empty() {
                         self.status = errors.join("；");
                     } else if self.mode == Mode::Video && self.streams.is_empty() {
                         self.status = "获取到视频信息，但没有可用画质".into();
@@ -986,6 +1068,8 @@ impl App {
                     self.selected_stream = 0;
                     if !errors.is_empty() {
                         self.status = errors.join("；");
+                    } else if self.mode == Mode::Subtitle && self.bili_local_transcribe {
+                        self.status = "已获取当前分P音频信息，可下载音频本地转写".into();
                     } else if self.mode == Mode::Video && self.streams.is_empty() {
                         self.status = "该分P没有可用画质".into();
                     } else if self.mode == Mode::Subtitle && self.tracks.is_empty() {
@@ -998,7 +1082,10 @@ impl App {
                         );
                     }
                 }
-                Msg::VideoStage(s) => self.status = s,
+                Msg::VideoStage(s) => {
+                    self.status = s;
+                    self.video_progress = None;
+                }
                 Msg::VideoProgress(p) => self.video_progress = Some(p.clamp(0.0, 1.0)),
                 Msg::ZhihuLoginFinished(result) => {
                     self.busy = false;
@@ -1038,12 +1125,16 @@ impl App {
                 },
                 Msg::TranscribeSaved(res) => match res {
                     Ok(paths) => {
+                        self.video_progress = None;
                         self.saved_files = paths.clone();
                         let texts: Vec<String> =
                             paths.iter().map(|p| p.display().to_string()).collect();
                         self.status = format!("已保存: {}", texts.join(" 和 "));
                     }
-                    Err(e) => self.status = format!("识别失败: {e:#}"),
+                    Err(e) => {
+                        self.video_progress = None;
+                        self.status = format!("识别失败: {e:#}");
+                    }
                 },
                 Msg::VideoSaved(res) => match res {
                     Ok(path) => {

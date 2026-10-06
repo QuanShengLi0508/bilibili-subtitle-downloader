@@ -21,6 +21,7 @@ Thumbs.db
 /tools/
 
 /runtime/
+/diarization/
 
 # Local export previews
 /output/
