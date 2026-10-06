@@ -236,6 +236,9 @@ impl App {
                         {
                             if !selected {
                                 self.mode = mode;
+                                self.comments = None;
+                                self.comment_selected.clear();
+                                self.comment_window_open = false;
                                 self.status = if mode == Mode::Transcribe {
                                     "选择音频或视频文件，然后开始识别"
                                 } else {
@@ -476,6 +479,7 @@ impl App {
                 });
                 let _ = bottom;
             });
+        self.render_comments(ctx);
         if self.output_settings_open {
             let mut open = self.output_settings_open;
             egui::Window::new("输出目录")

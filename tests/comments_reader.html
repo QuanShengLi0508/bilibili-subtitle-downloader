@@ -1,0 +1,68 @@
+<!doctype html><meta charset="utf-8"><title>评论读取检查</title>
+<!-- Run node tests/serve-comments.cjs, then open http://127.0.0.1:18764/tests/comments_reader.html -->
+<script>var module = {exports:{}};</script><script src="../src/comments_reader.js"></script>
+<body><script>
+const results=[];
+const assert=(condition, message)=>{if(!condition)throw new Error(message);};
+const reader=module.exports;
+const run=(name, test)=>{try{test();results.push(name+'：通过');}catch(error){results.push(name+'：失败 '+error.message);}};
+const set=(html)=>{document.body.innerHTML=html;};
+const get=(host,path='/note/123')=>reader.extract(document,{hostname:host,href:'https://'+host+path});
+run('B站嵌套评论组件与回复',()=>{
+  set('<bili-comments></bili-comments>');
+  const main=document.querySelector('bili-comments').attachShadow({mode:'open'});
+  main.innerHTML='<div id="count">2083</div><bili-comment-thread-renderer></bili-comment-thread-renderer>';
+  const thread=main.querySelector('bili-comment-thread-renderer').attachShadow({mode:'open'});
+  thread.innerHTML='<bili-comment-renderer id="comment"></bili-comment-renderer><bili-comment-reply-renderer></bili-comment-reply-renderer>';
+  const comment=thread.querySelector('bili-comment-renderer').attachShadow({mode:'open'});
+  comment.innerHTML='<bili-comment-user-info></bili-comment-user-info><div id="content">置顶<bili-rich-text></bili-rich-text></div><bili-comment-action-buttons-renderer></bili-comment-action-buttons-renderer>';
+  comment.querySelector('bili-comment-user-info').attachShadow({mode:'open'}).innerHTML='<div id="user-name">主评论作者</div>';
+  comment.querySelector('bili-rich-text').attachShadow({mode:'open'}).innerHTML='<p id="contents">完整正文最后一行</p>';
+  comment.querySelector('bili-comment-action-buttons-renderer').attachShadow({mode:'open'}).innerHTML='<div id="pubdate">2026-10-06 10:00</div><div id="like">260</div>';
+  thread.querySelector('bili-comment-reply-renderer').attachShadow({mode:'open'}).innerHTML='<div id="user-name">回复作者</div><p id="contents">回复末尾</p><div id="pubdate">2026-10-06 11:00</div><div id="like">18</div>';
+  const data=get('www.bilibili.com','/video/BV1test');
+  assert(data.comments.length===2,'应该读取主评论和回复');
+  assert(data.comments[0].body==='完整正文最后一行','置顶标记不能被当作正文');
+  assert(data.comments[1].reply_to==='主评论作者','回复要关联主评论');
+  assert(data.total_label==='2083'&&data.comments[0].like_count===260,'总数和点赞数不能混淆');
+});
+run('抖音完整正文 表情 去除作者标记',()=>{
+  set('<main><div>评论(3234)</div><div data-e2e="comment-item"><div><div class="comment-item-info-wrap"><a>作者甲</a><div id="tooltip_123456789"></div></div><div><span>正文末尾<img alt="[捂脸]"></span><div class="comment-item-tag">作者赞过</div></div><div>1周前·陕西</div><div class="comment-item-stats-container"><div><p><span>1.2万</span></p></div></div><div class="replyContainer"><div data-e2e="comment-item"><div class="comment-item-info-wrap"><a>回复乙</a></div><div><span>回复末尾</span></div><div>2天前</div><div class="like-count">6</div></div></div></div></div></main>');
+  const data=get('www.douyin.com');
+  assert(data.comments.length===2,'主评论与回复数量');
+  assert(data.comments[0].body==='正文末尾[捂脸]','正文表情或末尾缺失');
+  assert(data.comments[0].like_count===12000,'中文万单位点赞数');
+  assert(data.comments[1].reply_to==='作者甲','回复关联丢失');
+  assert(data.total_label==='评论(3234)','应显示实际总数');
+});
+run('小红书评论与楼中楼',()=>{
+  set('<div class="comments-container"><div class="total">共 18 条评论</div><div class="comment-item" data-id="x1"><div class="author"><span class="name">小红书作者</span></div><div class="content">主评论最后一段</div><div class="date">2026-10-06</div><div class="like-count">9</div><div class="sub-comment" data-id="x2"><div class="name">回复者</div><div class="content">回复全文末尾</div></div></div></div>');
+  const data=get('www.xiaohongshu.com','/explore/123456789012345678901234');
+  assert(data.comments.length===2&&data.comments[0].body==='主评论最后一段','不能把楼中楼拼进主评论');
+  assert(data.comments[1].reply_to==='小红书作者','回复上下文');
+});
+run('知乎评论区别于答案正文',()=>{
+  set('<div class="AnswerItem"><div class="AuthorInfo-name">回答作者</div><div class="RichText">答案正文不得当作评论</div><div class="CommentTopbar-title">12 条评论</div><div class="CommentItemV2"><a class="UserLink-link">评论作者</a><div class="CommentContent">评论完整末尾</div><div class="CommentItemV2-time">昨天 10:00</div><button class="CommentItemV2-likeButton">8</button></div></div>');
+  const data=get('www.zhihu.com','/question/123/answer/456');
+  assert(data.comments.length===1&&data.comments[0].body==='评论完整末尾','正文与评论要分开');
+  assert(data.comments[0].thread==='回答作者','所属回答上下文');
+});
+run('YouTube 通用ID不去重 回复上下文',()=>{
+  set('<ytd-comments-header-renderer><div id="count">100 Comments</div></ytd-comments-header-renderer><ytd-comment-thread-renderer><ytd-comment-view-model id="comment"><a id="author-text">Main Author</a><div id="content-text">First comment end</div><div id="published-time-text">2 days ago</div><div id="vote-count-middle">2K</div></ytd-comment-view-model><ytd-comment-replies-renderer><ytd-comment-view-model id="comment"><a id="author-text">Reply Author</a><div id="content-text">Reply end</div><div id="published-time-text">1 day ago</div><div id="vote-count-middle">0</div></ytd-comment-view-model></ytd-comment-replies-renderer></ytd-comment-thread-renderer>');
+  const data=get('www.youtube.com','/watch?v=jNQXAC9IVRw');
+  assert(data.comments.length===2,'重复组件ID不能误合并评论');
+  assert(data.comments[1].reply_to==='Main Author','回复作者关联');
+  assert(data.comments[0].like_count===2000&&data.comments[1].like_count===0,'点赞数字');
+});
+run('中英文时间 点赞单位 未知时间',()=>{
+  const now=Date.parse('2026-10-06T12:00:00+08:00');
+  assert(reader.parseTime('2小时前',now)===now-7200000,'中文相对时间');
+  assert(reader.parseTime('3 days ago',now)===now-259200000,'英文相对时间');
+  assert(reader.parseTime('2026-02-30',now)===null,'非法日期不得猜测');
+  assert(reader.parseTime('未知',now)===null,'未知时间');
+  assert(reader.parseLikes('1.2万')===12000&&reader.parseLikes('2,001')===2001,'数值转换');
+  assert(reader.parseLikes('赞')===null,'未知点赞不能算零');
+});
+document.body.innerHTML='<h1>评论读取检查</h1>'+results.map(r=>'<p>'+r+'</p>').join('');
+document.title=results.some(r=>r.includes('失败'))?'评论检查失败':'评论检查全部通过';
+</script>

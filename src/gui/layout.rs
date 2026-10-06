@@ -130,6 +130,16 @@ impl App {
                         }
                         _ => {}
                     }
+                    if self.mode != Mode::Transcribe {
+                        ui.separator();
+                        if secondary_button(ui, "检测评论", !self.busy) {
+                            self.spawn_comments();
+                        }
+                        if self.comments.is_some() && secondary_button(ui, "选择评论", !self.busy)
+                        {
+                            self.comment_window_open = true;
+                        }
+                    }
                 });
             });
             if before
@@ -198,6 +208,9 @@ impl App {
                     })
                     .inner;
                 if response.changed() {
+                    self.comments = None;
+                    self.comment_selected.clear();
+                    self.comment_window_open = false;
                     self.youtube = None;
                     self.douyin_article = None;
                     self.zhihu_content = None;

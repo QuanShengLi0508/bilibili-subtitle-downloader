@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::io::{Cursor, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -51,7 +51,7 @@ pub fn convert(source: &Path, format: TextFormat) -> Result<PathBuf> {
 pub fn save(path: &Path, title: &str, body: &str, format: TextFormat) -> Result<()> {
     let bytes = match format {
         TextFormat::Txt => format!("{title}\n\n{body}").into_bytes(),
-        TextFormat::Markdown => format!("# {title}\n\n{body}\n").into_bytes(),
+        TextFormat::Markdown => text_layout::markdown(title, body).into_bytes(),
         TextFormat::Word => word_bytes(title, body)?,
         TextFormat::Pdf => pdf_bytes(title, body)?,
     };
@@ -66,31 +66,12 @@ pub fn save(path: &Path, title: &str, body: &str, format: TextFormat) -> Result<
 }
 
 fn word_bytes(title: &str, body: &str) -> Result<Vec<u8>> {
-    use docx_rs::{Docx, Paragraph, Run, RunFonts};
-    let fonts = RunFonts::new().ascii("Calibri").east_asia("微软雅黑");
-    let mut document = Docx::new().add_paragraph(
-        Paragraph::new().add_run(
-            Run::new()
-                .add_text(title)
-                .bold()
-                .size(36)
-                .fonts(fonts.clone()),
-        ),
-    );
-    for line in body.lines() {
-        document = document.add_paragraph(
-            Paragraph::new().add_run(Run::new().add_text(line).size(22).fonts(fonts.clone())),
-        );
-    }
-    let mut buffer = Cursor::new(Vec::new());
-    document
-        .build()
-        .pack(&mut buffer)
-        .context("生成 Word 文件失败")?;
-    Ok(buffer.into_inner())
+    word_layout::bytes(title, body)
 }
 
 mod pdf_layout;
+mod text_layout;
+mod word_layout;
 fn pdf_bytes(title: &str, body: &str) -> Result<Vec<u8>> {
     pdf_layout::bytes(title, body)
 }
@@ -110,7 +91,29 @@ mod tests {
             match format {
                 TextFormat::Pdf => assert!(bytes.starts_with(b"%PDF-")),
                 TextFormat::Word => assert!(bytes.starts_with(b"PK")),
-                _ => assert!(String::from_utf8(bytes).unwrap().contains(&body)),
+                TextFormat::Markdown => {
+                    let text = String::from_utf8(bytes).unwrap();
+                    assert_eq!(text.matches("中文段落").count(), 150);
+                    assert!(text.contains("&lt;特殊符号&gt;"));
+                }
+                TextFormat::Txt => assert!(String::from_utf8(bytes).unwrap().contains(&body)),
+            }
+        }
+        if let Ok(source) = std::env::var("SHIWEN_TEXT_PREVIEW_SOURCE") {
+            let source = PathBuf::from(source);
+            let body = std::fs::read_to_string(&source).unwrap();
+            let title = source.file_stem().unwrap().to_string_lossy();
+            for format in [TextFormat::Markdown, TextFormat::Word] {
+                save(
+                    &PathBuf::from(format!(
+                        "output/documents/知乎问答-优化排版-v1.5.4.{}",
+                        format.extension()
+                    )),
+                    &title,
+                    &body,
+                    format,
+                )
+                .unwrap();
             }
         }
         if let Ok(source) = std::env::var("SHIWEN_PDF_PREVIEW_SOURCE") {

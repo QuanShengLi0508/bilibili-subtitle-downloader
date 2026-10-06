@@ -3,6 +3,7 @@
 mod bili;
 #[allow(dead_code)]
 mod cli;
+mod comments;
 mod douyin_article;
 mod douyin_gallery;
 mod export;
@@ -15,6 +16,29 @@ mod zhihu_login;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--comments-reader") {
+        let result = (|| -> anyhow::Result<bool> {
+            let input = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("缺少评论链接"))?;
+            let output = args
+                .get(index + 2)
+                .ok_or_else(|| anyhow::anyhow!("缺少评论预览路径"))?;
+            comments::open_reader(input, std::path::Path::new(output))
+        })();
+        let code = match result {
+            Ok(true) => 0,
+            Ok(false) => 2,
+            Err(error) => {
+                rfd::MessageDialog::new()
+                    .set_title("检测评论")
+                    .set_description(format!("{error:#}"))
+                    .show();
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     if let Some(index) = args
         .iter()
         .position(|arg| arg == "--douyin-gallery" || arg == "--xhs-gallery")

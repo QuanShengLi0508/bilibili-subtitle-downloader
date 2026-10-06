@@ -29,6 +29,8 @@ enum Mode {
 }
 
 enum Msg {
+    CommentsLoaded(Result<Option<crate::comments::Comments>>),
+    CommentsSaved(Result<PathBuf>),
     YoutubeLoaded(Result<crate::youtube::Video>),
     YoutubeSaved(Result<Vec<PathBuf>>),
     VideoLoaded(
@@ -63,6 +65,12 @@ enum Msg {
 }
 
 struct App {
+    comments: Option<Arc<crate::comments::Comments>>,
+    comment_selected: Vec<bool>,
+    comment_window_open: bool,
+    comment_page: usize,
+    comment_filter: String,
+    comment_sort: crate::comments::Sort,
     logo: egui::TextureHandle,
     ffmpeg_ok: bool,
     mode: Mode,
@@ -106,6 +114,55 @@ struct App {
 }
 
 impl App {
+    fn spawn_comments(&mut self) {
+        let Some(input) = crate::comments::link(&self.link) else {
+            self.status = "请先粘贴支持平台的内容链接，再检测评论".into();
+            return;
+        };
+        self.busy = true;
+        self.status = "请在官方窗口打开评论区，检测后返回勾选评论".into();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| -> Result<Option<crate::comments::Comments>> {
+                let response = tempfile::NamedTempFile::new()?;
+                let status = std::process::Command::new(std::env::current_exe()?)
+                    .arg("--comments-reader")
+                    .arg(&input)
+                    .arg(response.path())
+                    .status()?;
+                match status.code() {
+                    Some(0) => Ok(Some(crate::comments::Comments::from_message(
+                        &std::fs::read_to_string(response.path())?,
+                        &input,
+                    )?)),
+                    Some(2) => Ok(None),
+                    _ => anyhow::bail!("评论窗口未正常完成读取，请重试"),
+                }
+            })();
+            let _ = tx.send(Msg::CommentsLoaded(result));
+        });
+    }
+    fn export_comments(&mut self) {
+        let Some(comments) = self.comments.clone() else {
+            return;
+        };
+        let selected = self.comment_selected.clone();
+        if !selected.iter().any(|value| *value) {
+            self.status = "请先勾选要导出的评论".into();
+            return;
+        }
+        let directory = self.output_dir.clone();
+        let format = self.text_format;
+        let tx = self.tx.clone();
+        self.busy = true;
+        self.status = "正在导出所选评论…".into();
+        let sort = self.comment_sort;
+        thread::spawn(move || {
+            let _ = tx.send(Msg::CommentsSaved(
+                comments.export(&selected, &directory, format, sort),
+            ));
+        });
+    }
     fn spawn_xhs_login(&mut self) {
         self.busy = true;
         self.status = "请在小红书官方窗口登录，完成后关闭窗口，再获取图文".into();
@@ -243,6 +300,12 @@ impl App {
             egui::TextureOptions::LINEAR,
         );
         Self {
+            comments: None,
+            comment_selected: Vec::new(),
+            comment_window_open: false,
+            comment_page: 0,
+            comment_filter: String::new(),
+            comment_sort: crate::comments::Sort::Original,
             logo,
             mode: Mode::Subtitle,
             youtube: None,
@@ -779,6 +842,27 @@ impl App {
                 self.busy = false;
             }
             match msg {
+                Msg::CommentsLoaded(result) => match result {
+                    Ok(Some(comments)) => {
+                        self.status =
+                            format!("已检测 {} 条已加载评论，请勾选后导出", comments.items.len());
+                        self.comment_selected = vec![false; comments.items.len()];
+                        self.comments = Some(Arc::new(comments));
+                        self.comment_page = 0;
+                        self.comment_filter.clear();
+                        self.comment_sort = crate::comments::Sort::Original;
+                        self.comment_window_open = true;
+                    }
+                    Ok(None) => self.status = "已取消评论检测，未导出文件".into(),
+                    Err(error) => self.status = format!("评论检测失败：{error:#}"),
+                },
+                Msg::CommentsSaved(result) => match result {
+                    Ok(path) => {
+                        self.saved_files = vec![path];
+                        self.status = "所选评论已导出，可在左侧打开文件".into();
+                    }
+                    Err(error) => self.status = format!("评论导出失败：{error:#}"),
+                },
                 Msg::YoutubeLoaded(result) => match result {
                     Ok(video) => {
                         self.youtube_track = 0;
@@ -1034,6 +1118,7 @@ fn load_media_options(
     (tracks, streams, errors)
 }
 
+mod comments_ui;
 mod layout;
 mod reference;
 
