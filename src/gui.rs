@@ -26,9 +26,14 @@ enum Mode {
     WebText,
     Douyin,
     Xhs,
+    WechatArticle,
+    WechatChannels,
 }
 
 enum Msg {
+    WechatArticleLoaded(Result<Option<crate::wechat_article::Article>>),
+    WechatVideoLoaded(Result<Option<crate::wechat_channels::Video>>),
+    WechatSaved(Result<PathBuf>),
     CommentsLoaded(Result<Option<crate::comments::Comments>>),
     CommentsSaved(Result<PathBuf>),
     YoutubeLoaded(Result<crate::youtube::Video>),
@@ -65,6 +70,9 @@ enum Msg {
 }
 
 struct App {
+    wechat_article: Option<Arc<crate::wechat_article::Article>>,
+    wechat_video: Option<crate::wechat_channels::Video>,
+    wechat_preview_open: bool,
     comments: Option<Arc<crate::comments::Comments>>,
     comment_selected: Vec<bool>,
     comment_window_open: bool,
@@ -303,6 +311,9 @@ impl App {
             egui::TextureOptions::LINEAR,
         );
         Self {
+            wechat_article: None,
+            wechat_video: None,
+            wechat_preview_open: false,
             comments: None,
             comment_selected: Vec::new(),
             comment_window_open: false,
@@ -919,6 +930,37 @@ impl App {
                 self.busy = false;
             }
             match msg {
+                Msg::WechatArticleLoaded(result) => match result {
+                    Ok(Some(article)) => {
+                        self.status = format!(
+                            "已获取公众号正文 {} 字、{} 张配图，核对后确认导出",
+                            article.body.chars().count(),
+                            article.images.len()
+                        );
+                        self.wechat_article = Some(Arc::new(article));
+                    }
+                    Ok(None) => self.status = "已关闭公众号窗口，未导出文件".into(),
+                    Err(error) => self.status = format!("公众号获取失败：{error:#}"),
+                },
+                Msg::WechatVideoLoaded(result) => match result {
+                    Ok(Some(video)) => {
+                        self.status =
+                            "已检测到网页视频，确认后下载；保存前会检查文件能否播放".into();
+                        self.wechat_video = Some(video);
+                    }
+                    Ok(None) => self.status = "已关闭视频号窗口，未下载文件".into(),
+                    Err(error) => self.status = format!("视频号获取失败：{error:#}"),
+                },
+                Msg::WechatSaved(result) => {
+                    self.video_progress = None;
+                    match result {
+                        Ok(path) => {
+                            self.status = format!("已保存: {}", path.display());
+                            self.saved_files = vec![path];
+                        }
+                        Err(error) => self.status = format!("微信内容保存失败：{error:#}"),
+                    }
+                }
                 Msg::CommentsLoaded(result) => match result {
                     Ok(Some(comments)) => {
                         self.status =
@@ -1212,6 +1254,7 @@ fn load_media_options(
 mod comments_ui;
 mod layout;
 mod reference;
+mod wechat;
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
 

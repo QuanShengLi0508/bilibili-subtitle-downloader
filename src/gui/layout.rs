@@ -65,6 +65,10 @@ impl eframe::App for App {
 
 impl App {
     pub(super) fn source_card(&mut self, ui: &mut egui::Ui) {
+        if self.is_wechat() {
+            self.wechat_source_card(ui);
+            return;
+        }
         egui::Frame::default().show(ui, |ui| {
             ui.set_width(ui.available_width());
             if (self.mode == Mode::Douyin && self.douyin_article_mode)
@@ -502,6 +506,7 @@ impl App {
                     !self.link.trim().is_empty()
                 };
             let action = match self.mode {
+                Mode::WechatArticle | Mode::WechatChannels => unreachable!(),
                 Mode::Youtube => "获取视频与字幕列表",
                 Mode::Subtitle => {
                     if self.bili_local_transcribe {
@@ -626,6 +631,7 @@ impl App {
                     caption(
                         ui,
                         match self.mode {
+                            Mode::WechatArticle | Mode::WechatChannels => unreachable!(),
                             Mode::Youtube => {
                                 "先获取 → 下载视频或选择语言导出字幕；无字幕可用本地转写"
                             }
@@ -662,6 +668,9 @@ impl App {
     }
 
     pub(super) fn media_card(&mut self, ui: &mut egui::Ui) {
+        if self.is_wechat() {
+            return;
+        }
         if matches!(self.mode, Mode::Transcribe | Mode::WebText | Mode::BiliText) {
             return;
         }
@@ -969,6 +978,10 @@ mod tests {
                 Mode::Xhs,
                 Mode::WebText,
                 Mode::Subtitle,
+                Mode::WechatArticle,
+                Mode::WechatChannels,
+                Mode::WechatArticle,
+                Mode::WechatChannels,
             ]
             .into_iter()
             .enumerate()
@@ -978,6 +991,31 @@ mod tests {
                 apply_style(&ctx);
                 let mut app = App::new(&ctx);
                 app.mode = mode;
+                if index == 17 {
+                    app.status = "已获取公众号正文 1000 字、3 张配图，核对后确认导出".into();
+                    app.saved_files = vec![
+                        PathBuf::from("公众号文章与配图"),
+                        PathBuf::from("另一个最近导出的文件.pdf"),
+                    ];
+                    app.wechat_article = Some(Arc::new(crate::wechat_article::Article {
+                        title:
+                            "公众号文章：保持完整的文字与图片，较长的标题也能在小窗口里显示主要操作"
+                                .into(),
+                        body: "正文第一段，用于检查公众号预览。\n".repeat(100),
+                        source: "https://mp.weixin.qq.com/s/Example".into(),
+                        selected: false,
+                        images: vec!["https://mmbiz.qpic.cn/example.png".into(); 3],
+                        author: "示例作者".into(),
+                        published_at: "2026-10-07".into(),
+                    }));
+                }
+                if index == 18 {
+                    app.wechat_video = Some(crate::wechat_channels::Video {
+                        title: "已获取的视频号视频".into(),
+                        source: "https://channels.weixin.qq.com/web/pages/feed?oid=example".into(),
+                        media_url: "https://finder.video.qq.com/example.mp4".into(),
+                    });
+                }
                 if index == 14 {
                     app.bili_local_transcribe = true;
                 }

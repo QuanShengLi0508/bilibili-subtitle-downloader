@@ -187,7 +187,7 @@ impl App {
                     ui.image((self.logo.id(), egui::vec2(28.0, 28.0)));
                     ui.label(egui::RichText::new("拾文").size(20.0).strong().color(INK));
                 });
-                ui.add_space(23.0);
+                ui.add_space(if compact { 14.0 } else { 23.0 });
                 ui.label(egui::RichText::new("内容平台").size(11.0).color(MUTED));
                 ui.add_space(7.0);
                 for (mode, label, symbol) in [
@@ -196,6 +196,8 @@ impl App {
                     (Mode::Xhs, "小红书", Symbol::Document),
                     (Mode::Youtube, "YouTube", Symbol::Play),
                     (Mode::WebText, "知乎", Symbol::Document),
+                    (Mode::WechatChannels, "微信视频号", Symbol::Play),
+                    (Mode::WechatArticle, "微信公众号", Symbol::Document),
                     (Mode::Transcribe, "本地转写", Symbol::Wave),
                 ] {
                     let selected = self.mode == mode
@@ -203,7 +205,7 @@ impl App {
                             && matches!(self.mode, Mode::Video | Mode::BiliText));
                     ui.add_enabled_ui(!self.busy, |ui| {
                         let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 37.0),
+                            egui::vec2(ui.available_width(), if compact { 33.0 } else { 37.0 }),
                             egui::Sense::click(),
                         );
                         if selected || response.hovered() {
@@ -236,6 +238,7 @@ impl App {
                         {
                             if !selected {
                                 self.mode = mode;
+                                self.clear_wechat();
                                 self.comments = None;
                                 self.comment_selected.clear();
                                 self.comment_window_open = false;
@@ -258,7 +261,12 @@ impl App {
                     ui.add_space(20.0);
                     ui.label(egui::RichText::new("最近文件").size(11.0).color(MUTED));
                     ui.add_space(6.0);
-                    for path in self.saved_files.clone().into_iter().take(3) {
+                    for path in
+                        self.saved_files
+                            .clone()
+                            .into_iter()
+                            .take(if compact { 2 } else { 3 })
+                    {
                         ui.horizontal(|ui| {
                             let width = (ui.available_width() - 28.0).max(40.0);
                             let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -331,6 +339,8 @@ impl App {
                             Mode::Youtube => "YouTube",
                             Mode::WebText => "知乎",
                             Mode::Transcribe => "本地转写",
+                            Mode::WechatArticle => "微信公众号",
+                            Mode::WechatChannels => "微信视频号",
                         };
                         ui.label(egui::RichText::new(title).size(17.0).strong().color(INK));
                         ui.label(
@@ -346,7 +356,20 @@ impl App {
                     ui.add_space((ui.available_width() - 150.0).max(0.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.vertical(|ui| {
-                            if self.mode == Mode::Youtube {
+                            if self.is_wechat() {
+                                if secondary_button(
+                                    ui,
+                                    "打开官方页面",
+                                    !self.busy && !self.link.trim().is_empty(),
+                                ) {
+                                    self.spawn_wechat_reader();
+                                }
+                                ui.label(
+                                    egui::RichText::new("在网页内完成登录或验证")
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
+                            } else if self.mode == Mode::Youtube {
                                 if secondary_button(ui, "导入登录状态", !self.busy) {
                                     if let Some(path) = rfd::FileDialog::new()
                                         .add_filter("登录状态", &["txt"])
@@ -480,6 +503,7 @@ impl App {
                 let _ = bottom;
             });
         self.render_comments(ctx);
+        self.wechat_preview(ctx);
         if self.output_settings_open {
             let mut open = self.output_settings_open;
             egui::Window::new("输出目录")

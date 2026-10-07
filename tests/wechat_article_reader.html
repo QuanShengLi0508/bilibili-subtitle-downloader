@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>公众号读取检查</title>
+<!-- Run node tests/serve-wechat-article.cjs, then open http://127.0.0.1:18765/ -->
+<script>var module={exports:{}};</script><script src="/src/wechat_article_reader.js"></script>
+<body><script>
+const reader=module.exports, results=[];
+const assert=(ok,message)=>{if(!ok)throw new Error(message);};
+const source='https://mp.weixin.qq.com/s/FixtureArticle_123';
+const run=(name,test)=>{try{test();results.push({name,ok:true});}catch(error){results.push({name,ok:false,error:error.message});}};
+const set=html=>document.body.innerHTML='<h1 id="activity-name">文章标题</h1><a id="js_name">公众号作者</a><em id="publish_time">2026-10-07</em>'+html;
+const rejects=(html,pattern)=>{set(html);try{reader.extract(document,source);throw new Error('错误地接受了非完整文章');}catch(error){assert(pattern.test(error.message),error.message);}};
+run('完整段落、标题、元信息和末尾不截断',()=>{
+  set('<div id="js_content"><section><p>第一段<span>接续文字。</span></p><h2>第二节</h2><section>'+Array.from({length:120},(_,i)=>'<p>段落'+i+'完整内容。</p>').join('')+'</section><p>这是最后一段。</p></section></div><div id="js_article_bottom">阅读 100 万，不属于正文</div>');
+  const data=reader.extract(document,source);
+  assert(data.body.endsWith('这是最后一段。'),'末尾未完整保留');
+  assert(data.body.includes('第一段接续文字。\n\n## 第二节'),'标题或段落丢失');
+  assert(!data.body.includes('100 万'),'页面统计误入正文');
+  assert(data.author==='公众号作者'&&data.published_at==='2026-10-07','元信息缺失');
+  assert((data.body.match(/段落119/g)||[]).length===1,'嵌套段落被重复提取');
+});
+run('懒加载配图顺序、重复配图、正文相对位置',()=>{
+  set('<div id="js_content"><p>前段</p><img data-src="https://mmbiz.qpic.cn/a.png?wx_fmt=png" src="data:image/gif;base64,R0lGOD"><p>中段</p><img data-src="https://mmbiz.qpic.cn/b.jpg"><img data-src="https://mmbiz.qpic.cn/a.png?wx_fmt=png"><p>后段</p></div>');
+  const data=reader.extract(document,source);
+  assert(data.images.length===2,'去重配图数错误');
+  assert(data.body.indexOf('前段')<data.body.indexOf('![配图1]')&&data.body.indexOf('![配图1]')<data.body.indexOf('中段'),'配图位置丢失');
+  assert(data.body.endsWith('后段'),'配图后的正文丢失');
+});
+run('不误判正文讨论付费和阅读全文',()=>{
+  set('<div id="js_content"><p>本文讨论付费阅读和登录后阅读全文的设计。</p><p>观点结束。</p></div><a id="js_view_source">阅读原文</a>');
+  assert(reader.extract(document,source).complete,'正文关键词不应误触拦截');
+});
+run('拒绝付费预览、验证、空内容和折叠正文',()=>{
+  rejects('<div id="js_content"><p>前段预览</p></div><div id="js_pay_area">付费后阅读全文</div>',/付费/);
+  rejects('<div class="weui-msg">环境异常，请完成验证</div>',/验证/);
+  rejects('<div id="js_content"></div>',/为空/);
+  rejects('<div id="js_content" style="max-height:10px;overflow:hidden"><p>首段</p><p>被折叠的末尾</p></div>',/折叠/);
+});
+run('拒绝伪造平台和图片来源',()=>{
+  assert(!reader.articleURL('https://mp.weixin.qq.com.evil.test/s/test'),'伪造主机');
+  assert(!reader.articleURL('https://user@mp.weixin.qq.com/s/test'),'带用户名链接');
+  assert(!reader.articleURL('https://mp.weixin.qq.com/cgi-bin/home'),'管理页不是文章');
+  rejects('<div id="js_content"><p>正文</p><img src="https://mmbiz.qpic.cn.evil.test/pic.jpg"></div>',/图片来源/);
+});
+run('已隐藏验证提示不影响正文',()=>{
+  set('<div class="weui-msg" style="display:none">环境异常</div><div id="js_content"><p>真正的正文。</p><p hidden>隐藏控件</p></div>');
+  assert(reader.extract(document,source).body==='真正的正文。','隐藏控件混入正文');
+});
+document.body.innerHTML='<h1>公众号读取检查</h1>'+results.map(r=>'<p>'+r.name+'：'+(r.ok?'通过':'失败 '+r.error)+'</p>').join('');
+document.title=results.every(r=>r.ok)?'公众号检查全部通过':'公众号检查失败';
+window.fixtureResults=results;
+</script>

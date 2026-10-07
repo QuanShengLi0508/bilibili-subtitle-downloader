@@ -10,12 +10,43 @@ mod export;
 mod external;
 mod gui;
 mod transcribe;
+mod wechat_article;
+mod wechat_channels;
 mod youtube;
 mod zhihu;
 mod zhihu_login;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args
+        .iter()
+        .position(|arg| matches!(arg.as_str(), "--wechat-article" | "--wechat-channels"))
+    {
+        let result = (|| -> anyhow::Result<bool> {
+            let input = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("缺少微信内容链接"))?;
+            let output = args
+                .get(index + 2)
+                .ok_or_else(|| anyhow::anyhow!("缺少预览输出路径"))?;
+            if args[index] == "--wechat-article" {
+                wechat_article::open_reader(input, std::path::Path::new(output))
+            } else {
+                wechat_channels::open_reader(input, std::path::Path::new(output))
+            }
+        })();
+        std::process::exit(match result {
+            Ok(true) => 0,
+            Ok(false) => 2,
+            Err(error) => {
+                rfd::MessageDialog::new()
+                    .set_title("微信内容获取")
+                    .set_description(format!("{error:#}"))
+                    .show();
+                1
+            }
+        });
+    }
     if let Some(index) = args.iter().position(|arg| arg == "--comments-reader") {
         let result = (|| -> anyhow::Result<bool> {
             let input = args
