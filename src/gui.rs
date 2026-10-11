@@ -32,6 +32,7 @@ enum Mode {
 }
 
 enum Msg {
+    TwitterLoginFinished(Result<bool>),
     TwitterLoaded(Result<crate::twitter::Post>),
     TwitterSaved(Result<Vec<PathBuf>>),
     WechatArticleLoaded(Result<Option<crate::wechat_article::Article>>),
@@ -137,6 +138,45 @@ struct App {
 }
 
 impl App {
+    fn spawn_twitter_login(&mut self) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.status = "请在 X 官方窗口登录，完成后关闭窗口".into();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = (|| -> Result<bool> {
+                let receipt = tempfile::NamedTempFile::new()?;
+                let mut command = std::process::Command::new(std::env::current_exe()?);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    command.creation_flags(0x08000000);
+                }
+                let status = command
+                    .arg("--twitter-login")
+                    .arg(receipt.path())
+                    .status()?;
+                match status.code() {
+                    Some(0) => Ok(true),
+                    Some(2) => Ok(false),
+                    _ => {
+                        let details = std::fs::read_to_string(receipt.path()).unwrap_or_default();
+                        anyhow::bail!(
+                            "X 登录窗口未能完成：{}",
+                            if details.trim().is_empty() {
+                                "请检查网络或重新打开"
+                            } else {
+                                details.trim()
+                            }
+                        );
+                    }
+                }
+            })();
+            let _ = tx.send(Msg::TwitterLoginFinished(result));
+        });
+    }
     fn spawn_comments(&mut self) {
         let Some(input) = crate::comments::link(&self.link) else {
             self.status = "请先粘贴支持平台的内容链接，再检测评论".into();
@@ -944,6 +984,14 @@ impl App {
                 self.busy = false;
             }
             match msg {
+                Msg::TwitterLoginFinished(result) => {
+                    self.busy = false;
+                    self.status = match result {
+                        Ok(true) => "X 登录会话已保存，可重新获取帖子和下载视频".into(),
+                        Ok(false) => "登录尚未完成，请在 X 官方窗口完成后再关闭".into(),
+                        Err(error) => format!("X 登录失败：{error:#}"),
+                    };
+                }
                 Msg::TwitterLoaded(result) => match result {
                     Ok(post) => {
                         self.status = format!(

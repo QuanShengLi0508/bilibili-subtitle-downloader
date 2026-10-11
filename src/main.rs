@@ -20,6 +20,18 @@ mod zhihu_login;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--twitter-login") {
+        std::process::exit(match twitter::open_login() {
+            Ok(true) => 0,
+            Ok(false) => 2,
+            Err(error) => {
+                if let Some(receipt) = args.get(index + 1) {
+                    let _ = std::fs::write(receipt, format!("{error:#}"));
+                }
+                1
+            }
+        });
+    }
     if let Some(index) = args.iter().position(|arg| arg == "--twitter-reader") {
         let result = (|| -> anyhow::Result<bool> {
             let input = args

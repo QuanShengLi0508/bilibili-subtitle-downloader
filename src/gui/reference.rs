@@ -346,21 +346,17 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.vertical(|ui| {
                             if self.mode == Mode::Twitter {
-                                if secondary_button(ui, "导入登录状态", !self.busy) {
-                                    if let Some(path) = rfd::FileDialog::new()
-                                        .add_filter("登录状态", &["txt"])
-                                        .pick_file()
-                                    {
-                                        self.status = match crate::twitter::import_cookies(&path) {
-                                            Ok(()) => "X 登录状态已导入，可以重新获取".into(),
-                                            Err(error) => format!("X 登录状态导入失败：{error:#}"),
-                                        };
-                                    }
+                                if secondary_button(ui, "X 登录", !self.busy) {
+                                    self.spawn_twitter_login();
                                 }
                                 ui.label(
-                                    egui::RichText::new("需能正常访问 X")
-                                        .size(11.0)
-                                        .color(MUTED),
+                                    egui::RichText::new(if crate::twitter::has_saved_session() {
+                                        "已保存 X 登录会话"
+                                    } else {
+                                        "在官方网页直接登录"
+                                    })
+                                    .size(11.0)
+                                    .color(MUTED),
                                 );
                             } else if self.is_wechat() {
                                 if secondary_button(

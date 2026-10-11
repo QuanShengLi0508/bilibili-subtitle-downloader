@@ -19,6 +19,16 @@ fn official_host(host: &str) -> bool {
     )
 }
 
+fn official_page_url(input: &str) -> bool {
+    reqwest::Url::parse(input).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(official_host)
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+    })
+}
+
 fn parse_link(input: &str) -> Option<(String, String)> {
     let url = reqwest::Url::parse(input).ok()?;
     if !matches!(url.scheme(), "https" | "http")
@@ -326,56 +336,155 @@ pub fn cookie_path() -> PathBuf {
     crate::zhihu_login::session_directory().join("twitter-cookies.txt")
 }
 
-fn cookie_contents(text: &str) -> Result<String> {
-    let mut rows = Vec::new();
-    for line in text.lines() {
-        let row = line.strip_prefix("#HttpOnly_").unwrap_or(line);
-        if row.starts_with('#') || row.trim().is_empty() {
-            continue;
-        }
-        let fields: Vec<_> = row.split('\t').collect();
-        if fields.len() != 7 {
-            continue;
-        }
-        let domain = fields[0].trim_start_matches('.').to_ascii_lowercase();
-        if !["x.com", "twitter.com"]
+fn cookie_domain(domain: &str) -> bool {
+    let host = domain.strip_prefix('.').unwrap_or(domain);
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && ["x.com", "twitter.com"]
             .iter()
-            .any(|d| domain == *d || domain.ends_with(&format!(".{d}")))
-        {
-            continue;
-        }
-        if !matches!(fields[1], "TRUE" | "FALSE")
-            || !matches!(fields[3], "TRUE" | "FALSE")
-            || !fields[2].starts_with('/')
-            || fields[4].parse::<u64>().is_err()
-            || fields[5].is_empty()
-            || fields[5..].iter().any(|s| s.contains(['\r', '\n', '\0']))
-        {
-            continue;
-        }
-        rows.push(line.to_owned());
-    }
-    if rows.is_empty() {
-        bail!("没有找到 X / Twitter 登录状态，请选择 Netscape 格式 cookies.txt 文件");
-    }
-    Ok(format!(
-        "# Netscape HTTP Cookie File\n{}\n",
-        rows.join("\n")
-    ))
+            .any(|base| host == *base || host.ends_with(&format!(".{base}")))
 }
 
-pub fn import_cookies(path: &Path) -> Result<()> {
-    if std::fs::metadata(path)?.len() > 2_000_000 {
-        bail!("登录状态文件过大");
+fn cookie_reaches_x_api(domain: &str, path: &str) -> bool {
+    matches!(domain, ".x.com" | "api.x.com" | ".api.x.com")
+        && matches!(path, "/" | "/1.1" | "/1.1/")
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn browser_cookie_line(
+    domain: &str,
+    path: &str,
+    secure: bool,
+    expires: Option<i64>,
+    name: &str,
+    value: &str,
+    http_only: bool,
+    now: i64,
+) -> Option<String> {
+    if !cookie_domain(domain)
+        || !path.starts_with('/')
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+        || name.is_empty()
+        || value.is_empty()
+        || value.len() > 8192
+        || [domain, path, name, value]
+            .iter()
+            .any(|s| s.contains(['\t', '\r', '\n', '\0']))
+    {
+        return None;
     }
-    let content = cookie_contents(&std::fs::read_to_string(path)?)?;
+    // yt-dlp's Netscape jar interprets 0 as a browser session cookie.
+    let expires = expires.unwrap_or(0);
+    if expires != 0 && expires <= now {
+        return None;
+    }
+    let fields = [
+        domain.to_owned(),
+        if domain.starts_with('.') {
+            "TRUE"
+        } else {
+            "FALSE"
+        }
+        .into(),
+        path.to_owned(),
+        if secure { "TRUE" } else { "FALSE" }.into(),
+        expires.to_string(),
+        name.to_owned(),
+        value.to_owned(),
+    ];
+    let line = fields.join("\t");
+    Some(if http_only {
+        format!("#HttpOnly_{line}")
+    } else {
+        line
+    })
+}
+
+fn saved_x_cookie(text: &str, name: &str, now: i64) -> bool {
+    text.lines().any(|line| {
+        let fields: Vec<_> = line
+            .strip_prefix("#HttpOnly_")
+            .unwrap_or(line)
+            .split('\t')
+            .collect();
+        fields.len() == 7
+            && cookie_reaches_x_api(fields[0], fields[2])
+            && matches!(fields[1], "TRUE" | "FALSE")
+            && fields[2].starts_with('/')
+            && matches!(fields[3], "TRUE" | "FALSE")
+            && fields[4]
+                .parse::<i64>()
+                .is_ok_and(|expires| expires == 0 || expires > now)
+            && fields[5] == name
+            && !fields[6].is_empty()
+    })
+}
+
+pub fn has_saved_session() -> bool {
+    let path = cookie_path();
+    std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= 2_000_000)
+        && std::fs::read_to_string(path).is_ok_and(|text| {
+            let now = now_unix();
+            saved_x_cookie(&text, "auth_token", now) && saved_x_cookie(&text, "ct0", now)
+        })
+}
+
+#[cfg(windows)]
+fn save_browser_session(webview: &wry::WebView) -> Result<bool> {
+    let now = now_unix();
+    let mut rows = std::collections::BTreeSet::new();
+    let mut has_auth = false;
+    let mut has_csrf = false;
+    // WebView2's cookie manager includes HttpOnly cookies. Nothing is read from
+    // page JavaScript or IPC, and no cookie values enter UI messages or logs.
+    for cookie in webview.cookies().context("无法读取 X 登录状态")? {
+        let domain = cookie.domain().unwrap_or_default();
+        let Some(line) = browser_cookie_line(
+            domain,
+            cookie.path().unwrap_or("/"),
+            cookie.secure().unwrap_or(false),
+            cookie.expires_datetime().map(|time| time.unix_timestamp()),
+            cookie.name(),
+            cookie.value(),
+            cookie.http_only().unwrap_or(false),
+            now,
+        ) else {
+            continue;
+        };
+        if cookie.name() == "auth_token"
+            && cookie_reaches_x_api(domain, cookie.path().unwrap_or("/"))
+        {
+            has_auth = true;
+        }
+        if cookie.name() == "ct0" && cookie_reaches_x_api(domain, cookie.path().unwrap_or("/")) {
+            has_csrf = true;
+        }
+        rows.insert(line);
+    }
+    if !has_auth || !has_csrf {
+        return Ok(false);
+    }
+    let content = format!(
+        "# Netscape HTTP Cookie File\n{}\n",
+        rows.into_iter().collect::<Vec<_>>().join("\n")
+    );
     let output = cookie_path();
     std::fs::create_dir_all(output.parent().context("登录状态目录不存在")?)?;
     let mut file = tempfile::NamedTempFile::new_in(output.parent().unwrap())?;
     file.write_all(content.as_bytes())?;
     file.as_file().sync_all()?;
     file.persist(output).context("保存 X 登录状态失败")?;
-    Ok(())
+    Ok(true)
 }
 
 fn hide_console(command: &mut Command) {
@@ -415,7 +524,7 @@ fn run_bounded(command: &mut Command, timeout: Duration, progress: &dyn Fn(f64))
             }
             let _ = child.kill();
             let _ = child.wait();
-            bail!("X 操作超时，请检查网络或导入登录状态后重试");
+            bail!("X 操作超时，请检查网络，或在右上角直接登录 X 后重试");
         }
         if last_poll.elapsed() >= Duration::from_millis(700) {
             let mut text = String::new();
@@ -461,7 +570,7 @@ fn configure_tool(command: &mut Command) {
         "--fragment-retries",
         "1",
     ]);
-    if cookie_path().is_file() {
+    if has_saved_session() {
         command.arg("--cookies").arg(cookie_path());
     }
 }
@@ -473,7 +582,7 @@ fn tool_error(stderr: &[u8]) -> &'static str {
         || text.contains("403")
         || text.contains("protected")
     {
-        "X 要求登录或该帖子受限，请导入自己的登录状态后重试；也可在官方网页读取可见内容"
+        "X 要求登录或该帖子受限，请点击右上角「登录 X」后重试；也可在官方网页读取可见内容"
     } else if text.contains("429") || text.contains("rate-limit") {
         "X 暂时限制访问频率，请稍后再试"
     } else if text.contains("no video") || text.contains("not a video") {
@@ -481,7 +590,7 @@ fn tool_error(stderr: &[u8]) -> &'static str {
     } else if text.contains("unavailable") || text.contains("deleted") || text.contains("404") {
         "这条 X 帖子暂不可访问，可能已删除或需要登录"
     } else {
-        "X 获取失败，请检查网络、导入登录状态，或尝试官方网页读取"
+        "X 获取失败，请检查网络、点击右上角「登录 X」，或尝试官方网页读取"
     }
 }
 
@@ -670,6 +779,80 @@ pub fn read(input: &str) -> Result<Post> {
     Post::from_message(&std::fs::read_to_string(preview.path())?, &url)
 }
 
+#[cfg(windows)]
+pub fn open_login() -> Result<bool> {
+    use winit::{
+        application::ApplicationHandler,
+        event::WindowEvent,
+        event_loop::{ActiveEventLoop, EventLoop},
+        window::{Window, WindowId},
+    };
+    struct Login {
+        webview: Option<wry::WebView>,
+        window: Option<Window>,
+        result: Option<Result<bool>>,
+    }
+    impl ApplicationHandler for Login {
+        fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+            if self.window.is_some() {
+                return;
+            }
+            let setup = (|| -> Result<(Window, wry::WebView)> {
+                // The post reader uses the same WebView2 profile, so a successful
+                // login is also available when opening a long post in the app.
+                let profile = crate::zhihu_login::session_directory().join("twitter-webview");
+                std::fs::create_dir_all(&profile)?;
+                let window = event_loop.create_window(
+                    Window::default_attributes()
+                        .with_title("拾文 · 登录 X（登录完成后关闭此窗口）")
+                        .with_inner_size(winit::dpi::LogicalSize::new(1000.0, 760.0)),
+                )?;
+                let mut context = wry::WebContext::new(Some(profile));
+                let webview = wry::WebViewBuilder::new_with_web_context(&mut context)
+                    .with_navigation_handler(|url| official_page_url(&url))
+                    .with_url("https://x.com/i/flow/login")
+                    .build(&window)
+                    .context("无法打开 X 登录窗口，请检查 WebView2 Runtime")?;
+                Ok((window, webview))
+            })();
+            match setup {
+                Ok((window, webview)) => {
+                    self.window = Some(window);
+                    self.webview = Some(webview);
+                }
+                Err(error) => {
+                    self.result = Some(Err(error));
+                    event_loop.exit();
+                }
+            }
+        }
+        fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+            if matches!(event, WindowEvent::CloseRequested) {
+                self.result = Some(
+                    self.webview
+                        .as_ref()
+                        .context("X 登录窗口尚未加载")
+                        .and_then(save_browser_session),
+                );
+                event_loop.exit();
+            }
+        }
+    }
+    let event_loop = EventLoop::new()?;
+    let mut login = Login {
+        webview: None,
+        window: None,
+        result: None,
+    };
+    event_loop.run_app(&mut login)?;
+    login.result.unwrap_or(Ok(false))
+}
+
+#[cfg(not(windows))]
+pub fn open_login() -> Result<bool> {
+    bail!("X 登录窗口目前支持 Windows")
+}
+
 fn valid_ipc_source(message: &str, actual: &str, expected: &str) -> bool {
     actual.starts_with("https://")
         && id(actual).is_some()
@@ -710,15 +893,7 @@ pub fn open_reader(input: &str, output: &Path) -> Result<bool> {
                 let expected = self.url.clone();
                 let webview = wry::WebViewBuilder::new_with_web_context(&mut context)
                     .with_initialization_script(include_str!("twitter_reader.js"))
-                    .with_navigation_handler(|input| {
-                        reqwest::Url::parse(&input).is_ok_and(|u| {
-                            u.scheme() == "https"
-                                && u.host_str().is_some_and(official_host)
-                                && u.username().is_empty()
-                                && u.password().is_none()
-                                && u.port().is_none()
-                        })
-                    })
+                    .with_navigation_handler(|input| official_page_url(&input))
                     .with_ipc_handler(move |request| {
                         if valid_ipc_source(request.body(), &request.uri().to_string(), &expected) {
                             let _ = proxy.send_event(request.body().clone());
@@ -834,13 +1009,85 @@ mod tests {
         assert!(image_extension(b"<html>denied</html>").is_none());
     }
     #[test]
-    fn cookies_keep_x_only_and_preserve_httponly() {
-        let input="# Netscape HTTP Cookie File\n#HttpOnly_.x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\ttest-only-value\n.twitter.com\tTRUE\t/\tTRUE\t1999999999\tct0\ttest-only-value\n.example.com\tTRUE\t/\tTRUE\t1999999999\tsecret\tshould-drop\n.x.com.evil.test\tTRUE\t/\tTRUE\t1999999999\tsecret\tshould-drop\n";
-        let kept = cookie_contents(input).unwrap();
-        assert!(kept.contains("#HttpOnly_.x.com"));
-        assert!(kept.contains(".twitter.com"));
-        assert!(!kept.contains("should-drop"));
-        assert!(cookie_contents("not cookies").is_err());
+    fn direct_login_cookies_reach_x_api_and_preserve_httponly() {
+        let now = 1_800_000_000;
+        let auth = browser_cookie_line(
+            ".x.com",
+            "/",
+            true,
+            Some(now + 3600),
+            "auth_token",
+            "test-only-auth",
+            true,
+            now,
+        )
+        .unwrap();
+        let csrf = browser_cookie_line(
+            ".x.com",
+            "/",
+            true,
+            None,
+            "ct0",
+            "test-only-csrf",
+            false,
+            now,
+        )
+        .unwrap();
+        assert!(auth.starts_with("#HttpOnly_.x.com\tTRUE\t/\tTRUE"));
+        assert!(csrf.contains("\t0\tct0\t"));
+        let jar = format!("# Netscape HTTP Cookie File\n{auth}\n{csrf}\n");
+        assert!(saved_x_cookie(&jar, "auth_token", now));
+        assert!(saved_x_cookie(&jar, "ct0", now));
+        assert!(!saved_x_cookie(&auth, "ct0", now));
+        assert!(browser_cookie_line(
+            ".x.com",
+            "/",
+            true,
+            Some(now - 1),
+            "auth_token",
+            "expired",
+            true,
+            now
+        )
+        .is_none());
+        assert!(browser_cookie_line(
+            ".x.com.evil.test",
+            "/",
+            true,
+            None,
+            "auth_token",
+            "stolen",
+            true,
+            now
+        )
+        .is_none());
+        assert!(browser_cookie_line(
+            ".x.com",
+            "/",
+            true,
+            None,
+            "auth_token",
+            "bad\nheader",
+            true,
+            now
+        )
+        .is_none());
+        let host_only = browser_cookie_line(
+            "x.com",
+            "/",
+            true,
+            None,
+            "auth_token",
+            "host-only",
+            true,
+            now,
+        )
+        .unwrap();
+        assert!(!saved_x_cookie(&host_only, "auth_token", now));
+        assert!(!cookie_reaches_x_api(".twitter.com", "/"));
+        assert!(!cookie_reaches_x_api(".x.com", "/i/flow"));
+        assert!(!official_page_url("https://x.com.evil.test/i/flow/login"));
+        assert!(official_page_url("https://x.com/i/flow/login"));
     }
     #[test]
     fn browser_ipc_is_bound_to_requested_post() {
