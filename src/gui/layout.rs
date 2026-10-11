@@ -61,10 +61,17 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.render_reference(ctx);
     }
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_preferences(true);
+    }
 }
 
 impl App {
     pub(super) fn source_card(&mut self, ui: &mut egui::Ui) {
+        if self.mode == Mode::Twitter {
+            self.twitter_source_card(ui);
+            return;
+        }
         if self.is_wechat() {
             self.wechat_source_card(ui);
             return;
@@ -212,16 +219,9 @@ impl App {
                     })
                     .inner;
                 if response.changed() {
-                    self.comments = None;
-                    self.comment_selected.clear();
-                    self.comment_window_open = false;
-                    self.youtube = None;
-                    self.douyin_article = None;
-                    self.zhihu_content = None;
-                    self.video = None;
-                    self.external = None;
-                    self.tracks.clear();
-                    self.streams.clear();
+                    if self.link_changed() {
+                        return;
+                    }
                 }
                 if response.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter))
@@ -506,7 +506,7 @@ impl App {
                     !self.link.trim().is_empty()
                 };
             let action = match self.mode {
-                Mode::WechatArticle | Mode::WechatChannels => unreachable!(),
+                Mode::Twitter | Mode::WechatArticle | Mode::WechatChannels => unreachable!(),
                 Mode::Youtube => "获取视频与字幕列表",
                 Mode::Subtitle => {
                     if self.bili_local_transcribe {
@@ -631,7 +631,9 @@ impl App {
                     caption(
                         ui,
                         match self.mode {
-                            Mode::WechatArticle | Mode::WechatChannels => unreachable!(),
+                            Mode::Twitter | Mode::WechatArticle | Mode::WechatChannels => {
+                                unreachable!()
+                            }
                             Mode::Youtube => {
                                 "先获取 → 下载视频或选择语言导出字幕；无字幕可用本地转写"
                             }
@@ -668,6 +670,9 @@ impl App {
     }
 
     pub(super) fn media_card(&mut self, ui: &mut egui::Ui) {
+        if self.mode == Mode::Twitter {
+            return;
+        }
         if self.is_wechat() {
             return;
         }
@@ -882,7 +887,11 @@ impl App {
         if self.status == "粘贴B站视频链接，然后点「获取」" && !self.busy {
             return;
         }
-        ui.add_space(10.0);
+        ui.add_space(if ui.ctx().screen_rect().height() < 680.0 {
+            4.0
+        } else {
+            10.0
+        });
         ui.horizontal(|ui| {
             if self.busy {
                 ui.spinner();
@@ -902,10 +911,14 @@ impl App {
             } else {
                 self.status.clone()
             };
-            ui.add(
+            ui.add_sized(
+                [(ui.available_width() - 54.0).max(80.0), 24.0],
                 egui::Label::new(egui::RichText::new(&message).size(12.0).color(MUTED)).truncate(),
             )
             .on_hover_text(&self.status);
+            if ui.small_button("详情").clicked() {
+                self.status_details_open = true;
+            }
         });
         if let Some(progress) = self.video_progress.filter(|_| self.busy) {
             ui.add(
@@ -982,6 +995,9 @@ mod tests {
                 Mode::WechatChannels,
                 Mode::WechatArticle,
                 Mode::WechatChannels,
+                Mode::Twitter,
+                Mode::Twitter,
+                Mode::Twitter,
             ]
             .into_iter()
             .enumerate()
@@ -991,6 +1007,23 @@ mod tests {
                 apply_style(&ctx);
                 let mut app = App::new(&ctx);
                 app.mode = mode;
+                if index >= 20 {
+                    app.twitter_video_mode = index == 21;
+                    app.twitter_post = Some(Arc::new(crate::twitter::Post {
+                        title: "一条有较长标题的 X 帖子，用于核对小窗口中的主要操作和预览布局"
+                            .into(),
+                        body: "完整正文测试。\n".repeat(100),
+                        author: "Example Author @example".into(),
+                        source: "https://x.com/example/status/123456".into(),
+                        published_at: "2026-10-11".into(),
+                        images: vec!["https://pbs.twimg.com/media/example.jpg".into()],
+                        video_count: 1,
+                        warning: Some(
+                            "当前为公开预览，长文和部分媒体可能省略；可在官方页面展开后读取。"
+                                .into(),
+                        ),
+                    }));
+                }
                 if index == 17 {
                     app.status = "已获取公众号正文 1000 字、3 张配图，核对后确认导出".into();
                     app.saved_files = vec![

@@ -9,7 +9,9 @@ mod douyin_gallery;
 mod export;
 mod external;
 mod gui;
+mod preferences;
 mod transcribe;
+mod twitter;
 mod wechat_article;
 mod wechat_channels;
 mod youtube;
@@ -18,6 +20,28 @@ mod zhihu_login;
 
 fn main() -> eframe::Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--twitter-reader") {
+        let result = (|| -> anyhow::Result<bool> {
+            let input = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("缺少 X 帖子链接"))?;
+            let output = args
+                .get(index + 2)
+                .ok_or_else(|| anyhow::anyhow!("缺少预览输出路径"))?;
+            twitter::open_reader(input, std::path::Path::new(output))
+        })();
+        std::process::exit(match result {
+            Ok(true) => 0,
+            Ok(false) => 2,
+            Err(error) => {
+                rfd::MessageDialog::new()
+                    .set_title("X / 推特")
+                    .set_description(format!("{error:#}"))
+                    .show();
+                1
+            }
+        });
+    }
     if let Some(index) = args
         .iter()
         .position(|arg| matches!(arg.as_str(), "--wechat-article" | "--wechat-channels"))
@@ -60,13 +84,7 @@ fn main() -> eframe::Result<()> {
         let code = match result {
             Ok(true) => 0,
             Ok(false) => 2,
-            Err(error) => {
-                rfd::MessageDialog::new()
-                    .set_title("检测评论")
-                    .set_description(format!("{error:#}"))
-                    .show();
-                1
-            }
+            Err(_) => 1, // The child writes details for the main window to display.
         };
         std::process::exit(code);
     }

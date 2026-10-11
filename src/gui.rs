@@ -18,6 +18,7 @@ const LOGO_PNG: &[u8] = include_bytes!("../assets/subtitle-extractor-logo.png");
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
+    Twitter,
     Youtube,
     BiliText,
     Subtitle,
@@ -31,6 +32,8 @@ enum Mode {
 }
 
 enum Msg {
+    TwitterLoaded(Result<crate::twitter::Post>),
+    TwitterSaved(Result<Vec<PathBuf>>),
     WechatArticleLoaded(Result<Option<crate::wechat_article::Article>>),
     WechatVideoLoaded(Result<Option<crate::wechat_channels::Video>>),
     WechatSaved(Result<PathBuf>),
@@ -70,6 +73,15 @@ enum Msg {
 }
 
 struct App {
+    twitter_post: Option<Arc<crate::twitter::Post>>,
+    twitter_video_mode: bool,
+    twitter_preview_open: bool,
+    preferences: crate::preferences::Preferences,
+    preferences_checked: std::time::Instant,
+    preferences_error: Option<String>,
+    link_drafts: std::collections::HashMap<String, String>,
+    status_details_open: bool,
+    history_open: bool,
     wechat_article: Option<Arc<crate::wechat_article::Article>>,
     wechat_video: Option<crate::wechat_channels::Video>,
     wechat_preview_open: bool,
@@ -134,22 +146,7 @@ impl App {
         self.status = "请在官方窗口打开评论区，检测后返回勾选评论".into();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = (|| -> Result<Option<crate::comments::Comments>> {
-                let response = tempfile::NamedTempFile::new()?;
-                let status = std::process::Command::new(std::env::current_exe()?)
-                    .arg("--comments-reader")
-                    .arg(&input)
-                    .arg(response.path())
-                    .status()?;
-                match status.code() {
-                    Some(0) => Ok(Some(crate::comments::Comments::from_message(
-                        &std::fs::read_to_string(response.path())?,
-                        &input,
-                    )?)),
-                    Some(2) => Ok(None),
-                    _ => anyhow::bail!("评论窗口未正常完成读取，请重试"),
-                }
-            })();
+            let result = crate::comments::read(&input);
             let _ = tx.send(Msg::CommentsLoaded(result));
         });
     }
@@ -297,10 +294,11 @@ impl App {
     }
     fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
-        let default_output = std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|parent| parent.join("字幕输出")))
-            .unwrap_or_else(output_dir);
+        let default_output = workspace::default_output_directory();
+        #[cfg(not(test))]
+        let preferences = crate::preferences::Preferences::load(&default_output);
+        #[cfg(test)]
+        let preferences = crate::preferences::Preferences::new(default_output.clone());
         let icon = eframe::icon_data::from_png_bytes(LOGO_PNG).expect("Invalid application logo");
         let logo = ctx.load_texture(
             "app-logo",
@@ -311,6 +309,15 @@ impl App {
             egui::TextureOptions::LINEAR,
         );
         Self {
+            twitter_post: None,
+            twitter_video_mode: false,
+            twitter_preview_open: false,
+            preferences: preferences.clone(),
+            preferences_checked: std::time::Instant::now(),
+            preferences_error: None,
+            link_drafts: Default::default(),
+            status_details_open: false,
+            history_open: false,
             wechat_article: None,
             wechat_video: None,
             wechat_preview_open: false,
@@ -321,13 +328,13 @@ impl App {
             comment_filter: String::new(),
             comment_sort: crate::comments::Sort::Original,
             logo,
-            mode: Mode::Subtitle,
+            mode: Mode::from_key(&preferences.platform),
             youtube: None,
             youtube_subtitles: false,
             youtube_track: 0,
             ffmpeg_ok: Client::ffmpeg_available(),
             link: String::new(),
-            status: "粘贴B站视频链接，然后点「获取」".into(),
+            status: "粘贴内容链接，自动识别平台；获取后预览并保存".into(),
             busy: false,
             video: None,
             selected_page: 1,
@@ -344,18 +351,24 @@ impl App {
             douyin_article: None,
             douyin_preview_open: false,
             media_file: None,
-            text_format: TextFormat::Txt,
-            saved_files: recent_saved_file(&default_output).into_iter().collect(),
+            text_format: preferences.text_format,
+            saved_files: if preferences.recent_files.is_empty() {
+                recent_saved_file(&preferences.output_dir)
+                    .into_iter()
+                    .collect()
+            } else {
+                preferences.recent_files.clone()
+            },
             reveal_result: false,
-            transcribe_language: "auto".into(),
-            speaker_diarization: true,
-            speaker_count: 0,
+            transcribe_language: preferences.transcribe_language.clone(),
+            speaker_diarization: preferences.speaker_diarization,
+            speaker_count: preferences.speaker_count,
             bili_local_transcribe: false,
             zhihu_from: String::new(),
             zhihu_to: String::new(),
             zhihu_all_answers: true,
             zhihu_content: None,
-            output_dir: default_output,
+            output_dir: preferences.output_dir.clone(),
             output_settings_open: false,
             tx,
             rx,
@@ -915,6 +928,7 @@ impl App {
     fn poll_messages(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.rx.try_recv() {
             let previous_status = self.status.clone();
+            let previous_files = self.saved_files.clone();
             if self.qr_cancelled.load(Ordering::Relaxed)
                 && matches!(
                     &msg,
@@ -930,6 +944,27 @@ impl App {
                 self.busy = false;
             }
             match msg {
+                Msg::TwitterLoaded(result) => match result {
+                    Ok(post) => {
+                        self.status = format!(
+                            "已获取 X 帖子 · {} 张配图 · {} 个视频，请预览后保存",
+                            post.images.len(),
+                            post.video_count
+                        );
+                        self.twitter_post = Some(Arc::new(post));
+                    }
+                    Err(error) => self.status = format!("X 获取失败：{error:#}"),
+                },
+                Msg::TwitterSaved(result) => {
+                    self.video_progress = None;
+                    match result {
+                        Ok(paths) => {
+                            self.saved_files = paths;
+                            self.status = "X 内容导出完成，可从最近文件打开".into();
+                        }
+                        Err(error) => self.status = format!("X 保存失败：{error:#}"),
+                    }
+                }
                 Msg::WechatArticleLoaded(result) => match result {
                     Ok(Some(article)) => {
                         self.status = format!(
@@ -1225,6 +1260,12 @@ impl App {
                     }
                 }
             }
+            if self.saved_files != previous_files {
+                let mut history = crate::preferences::Preferences::new(self.output_dir.clone());
+                history.recent_files = previous_files;
+                history.remember_files(&self.saved_files);
+                self.saved_files = history.recent_files;
+            }
             if self.status != previous_status
                 && (self.status.starts_with("已保存:") || self.status.contains("失败"))
             {
@@ -1254,7 +1295,9 @@ fn load_media_options(
 mod comments_ui;
 mod layout;
 mod reference;
+mod twitter;
 mod wechat;
+mod workspace;
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
 

@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><title>X 帖子读取检查</title>
+<style>.whitespace-pre-wrap{white-space:pre-wrap}</style>
+<script>var module={exports:{}};</script><script src="../src/twitter_reader.js"></script>
+<body><script>
+const reader=module.exports,results=[],url='https://x.com/NASA/status/2018361967644127646';
+const assert=(ok,message)=>{if(!ok)throw new Error(message);};
+const run=(name,test)=>{try{test();results.push({name,ok:true});}catch(error){results.push({name,ok:false,error:error.message});}};
+const set=html=>document.body.innerHTML=html;
+const core='<a href="/NASA">NASA</a><a data-base-ui-tooltip-trigger href="/NASA/status/2018361967644127646">0:32 · 2026年2月3日</a>';
+run('SSR 当前公开页正文、作者、时间、inert配图',()=>{
+  set('<main><ul><li><div data-timeline-entry><article class="flex flex-col gap-1">'+core+'<div dir="auto" class="max-w-full text-body font-normal text-primary whitespace-pre-wrap wrap-break-word">首段正文\n\n末尾完整内容</div><div class="relative"><div inert><img src="https://pbs.twimg.com/media/first.jpg?name=small"></div><a aria-label="查看媒体" href="/NASA/status/2018361967644127646/photo/1"></a></div><div class="quoted-post"><div class="relative"><div inert><img src="https://pbs.twimg.com/media/quoted.jpg"></div><a aria-label="查看媒体" href="/Other/status/987/photo/1"></a></div></div><img alt="@NASA" src="https://pbs.twimg.com/profile_images/avatar.jpg"><a href="/NASA/status/2018361967644127646">100万浏览</a></article></div></li></ul></main>');
+  const p=reader.extract(document,url);assert(p.body==='首段正文\n\n末尾完整内容','正文段落或末尾丢失');assert(p.author==='NASA','作者');assert(p.published_at==='0:32 · 2026年2月3日','不能误取浏览量为时间');assert(p.images.length===1&&p.images[0].endsWith('name=orig'),'配图应取原图且不包含头像');
+});
+run('传统结构、回复和引用帖不并入原帖',()=>{
+  set('<article data-testid="tweet"><div data-testid="User-Name">NASA</div><a href="/NASA/status/2018361967644127646"><time datetime="2026-02-02T16:32:47Z">Feb 2</time></a><div data-testid="tweetText">原帖末尾</div><a href="/NASA/status/2018361967644127646/photo/1"><div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/own.png"></div></a><div data-testid="quoteTweet"><div data-testid="tweetText">引用正文不得合并</div><a href="/Other/status/987/photo/1"><img src="https://pbs.twimg.com/media/quote.png"></a></div></article><article data-testid="tweet"><a href="/Reply/status/456"><time>Now</time></a><div data-testid="tweetText">回复不得合并</div></article>');
+  const p=reader.extract(document,url);assert(p.body==='原帖末尾','回复/引用误入正文');assert(p.images.length===1&&!p.images[0].includes('quote'),'引用图片被误保存');assert(p.published_at==='2026-02-02T16:32:47Z','datetime保留');
+});
+run('多配图顺序与视频计数',()=>{
+  set('<article>'+core+'<div dir="auto" class="whitespace-pre-wrap">包含媒体</div><a href="/NASA/status/2018361967644127646/photo/1"><img src="https://pbs.twimg.com/media/a.jpg"></a><a href="/NASA/status/2018361967644127646/photo/2"><img src="https://pbs.twimg.com/media/b.jpg"></a><div data-testid="videoPlayer"><video></video></div></article>');
+  const p=reader.extract(document,url);assert(p.images.length===2&&p.images[0].includes('/a.jpg')&&p.images[1].includes('/b.jpg'),'媒体顺序');assert(p.video_count===1,'视频播放器与video不能双计数');
+});
+run('拒绝未展开、缺失原帖和假域名',()=>{
+  set('<article>'+core+'<div dir="auto" class="whitespace-pre-wrap">只返回摘要</div><button>Show more</button></article>');
+  try{reader.extract(document,url);throw new Error('未拒绝摘要');}catch(e){assert(e.message.includes('展开'),e.message);}
+  set('<article><a href="/Reply/status/456">回复</a><div data-testid="tweetText">不能作为原帖</div></article>');
+  try{reader.extract(document,url);throw new Error('未拒绝错误帖');}catch(e){assert(e.message.includes('所选原帖'),e.message);}
+  assert(!reader.parse('https://x.com.evil.test/NASA/status/123'),'假域名');assert(!reader.photo('https://pbs.twimg.com.evil.test/media/a.jpg'),'假图片域名');
+});
+document.title=results.every(r=>r.ok)?'X 帖子检查全部通过':'X 帖子检查失败';
+document.body.innerHTML='<h1>X 帖子读取检查</h1>'+results.map(r=>'<p>'+r.name+'：'+(r.ok?'通过':'失败 '+r.error)+'</p>').join('');
+</script>

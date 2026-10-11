@@ -73,6 +73,35 @@ run('中英文时间 点赞单位 未知时间',()=>{
   assert(reader.parseLikes('1.2万')===12000&&reader.parseLikes('2,001')===2001,'数值转换');
   assert(reader.parseLikes('赞')===null,'未知点赞不能算零');
 });
+const xArticle=(id,body,extra='',legacy=false)=>`<article ${legacy?'data-testid="tweet"':''}><a href="/User${id}">@User${id}</a><a href="/User${id}/status/${id}" data-base-ui-tooltip-trigger>${legacy?'<time datetime="2026-10-11T01:00:00Z">Oct 11</time>':'2026年10月11日'}</a><div dir="auto" class="whitespace-pre-wrap" ${legacy?'data-testid="tweetText"':''}>${body}</div><div data-engagement-action="like">1.2万</div>${extra}</article>`;
+const xRow=(id,body,extra='')=>`<li><div data-timeline-entry data-href="/User${id}/status/${id}">${xArticle(id,body,extra)}</div></li>`;
+run('X 当前公开DOM：原帖后同会话、配图条目与推荐截断',()=>{
+  set('<main><ul>'+xRow('90','祖先帖不能导出')+xRow('100','原帖不能导出')+xRow('101','第一条会话末尾')+xRow('102','','<a href="/User102/status/102/photo/1">查看媒体</a>')+'<li><h2>Discover more</h2></li>'+xRow('103','推荐不能导出')+'</ul></main><aside>'+xArticle('104','侧边栏推荐不能导出')+'</aside>');
+  const data=get('x.com','/User100/status/100');
+  assert(data.comments.length===2,'只应保留原帖下推荐区域之前的2条会话');
+  assert(data.comments[0].id==='101'&&data.comments[0].body==='第一条会话末尾','原帖不应进入评论');
+  assert(data.comments[1].body.includes('仅含图片或视频'),'图片回复必须说明无文字，不能吞掉');
+  assert(data.comments[0].like_count===12000&&data.comments[0].posted_at!==null,'赞与绝对时间');
+  assert(data.comments.every(c=>c.conversation_source_id==='100'&&c.scope==='loaded-conversation'),'每条关联确切原帖ID');
+  assert(data.total_label.includes('不保证均为直接回复'),'不能把串帖说成直接回复');
+});
+run('X 旧版会话：嵌套引用、原帖与广告排除',()=>{
+  set('<main><section role="region" aria-label="Timeline: Conversation">'+xArticle('100','原帖', '', true)+xArticle('101','真正的回复','<div data-testid="quoteTweet">'+xArticle('800','引用帖不可进入回复')+'</div>',true)+'<div data-testid="cellInnerDiv"><span data-testid="promotedIndicator">Ad</span>'+xArticle('102','广告不可导出','',true)+'</div>'+xArticle('103','广告后不自动纳入','',true)+'</section></main>');
+  const data=get('twitter.com','/User100/status/100');
+  assert(data.comments.length===1&&data.comments[0].id==='101','引用和广告必须排除');
+  assert(data.comments[0].body==='真正的回复','不能把引用正文拼进回复');
+  assert(data.comments[0].posted_at===Date.parse('2026-10-11T01:00:00Z'),'使用datetime完整时间');
+});
+run('X 确切状态ID、缺失原帖、登录与不可用不会报零评论',()=>{
+  assert(reader.xStatus('https://twitter.com/u/status/100/photo/1')==='100','媒体分享链接ID');
+  assert(reader.xStatus('https://x.com/i/web/status/100')==='100','旧状态路由');
+  assert(reader.xStatus('https://x.com.evil.test/u/status/100')===null,'拒绝伪造来源');
+  const error=(html,path,code)=>{set(html);try{get('x.com',path);throw new Error('错误地接受了页面');}catch(e){assert(e.code===code,e.message);}};
+  error('<main><ul>'+xRow('200','其他帖子')+'</ul></main>','/u/status/100','changed_post');
+  error('<main>Log in to X</main>','/i/flow/login','login_required');
+  error('<main>唔...该页面不存在。请尝试搜索别的内容。</main>','/u/status/100','unavailable');
+  error('<main><ul>'+xRow('100','原帖')+xRow('101','折叠部分','<button>Show more</button>')+'</ul></main>','/u/status/100','not_loaded');
+});
 document.body.innerHTML='<h1>评论读取检查</h1>'+results.map(r=>'<p>'+r+'</p>').join('');
 document.title=results.some(r=>r.includes('失败'))?'评论检查失败':'评论检查全部通过';
 </script>

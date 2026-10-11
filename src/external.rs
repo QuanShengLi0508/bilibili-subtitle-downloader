@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -44,15 +44,12 @@ impl Gallery {
         for entry in entries {
             let url = entry.as_str().context("图片链接无效")?;
             let parsed = reqwest::Url::parse(url)?;
-            let host = parsed.host_str().unwrap_or_default();
-            let allowed = if xhs {
-                host == "xhscdn.com" || host.ends_with(".xhscdn.com")
+            let site = if xhs {
+                GallerySite::Xhs
             } else {
-                host == "douyinpic.com"
-                    || host.ends_with(".douyinpic.com")
-                    || host.ends_with(".byteimg.com")
+                GallerySite::Douyin
             };
-            if parsed.scheme() != "https" || !allowed {
+            if !image_url_allowed(&parsed, site) {
                 bail!("图片来源不是该平台的图片服务器");
             }
             if !images.iter().any(|saved| saved == url) {
@@ -211,6 +208,28 @@ pub fn download_gallery(
 ) -> Result<PathBuf> {
     use std::io::{Read, Write};
     let gallery = video.gallery.as_ref().context("不是图文作品")?;
+    let source = reqwest::Url::parse(&video.url).context("图文来源无效")?;
+    if !source.username().is_empty() || source.password().is_some() || source.port().is_some() {
+        bail!("图文来源地址无效");
+    }
+    let site = if crate::douyin_article::bili_url(&video.url).is_some() {
+        GallerySite::Bili
+    } else if is_xhs(&video.url) {
+        GallerySite::Xhs
+    } else if is_douyin(&video.url) {
+        GallerySite::Douyin
+    } else {
+        bail!("不支持此图文来源");
+    };
+    if gallery.images.is_empty() || gallery.images.len() > 200 {
+        bail!("图文图片数量无效，请重新获取");
+    }
+    for url in &gallery.images {
+        let url = reqwest::Url::parse(url).context("图文图片地址无效")?;
+        if !image_url_allowed(&url, site) {
+            bail!("图片来源不是该平台的图片服务器");
+        }
+    }
     std::fs::create_dir_all(output_dir)?;
     let folder = tempfile::Builder::new()
         .prefix(&format!(
@@ -219,23 +238,34 @@ pub fn download_gallery(
         ))
         .tempdir_in(output_dir)?;
     let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(45))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 8 {
+                attempt.error("图片重定向过多")
+            } else if image_url_allowed(attempt.url(), site) {
+                attempt.follow()
+            } else {
+                attempt.error("图片跳转到了非支持的服务器")
+            }
+        }))
         .build()?;
     for (index, url) in gallery.images.iter().enumerate() {
         let response = client
             .get(url)
             .header(
                 "Referer",
-                if crate::douyin_article::bili_url(&video.url).is_some() {
-                    "https://www.bilibili.com/"
-                } else if is_xhs(&video.url) {
-                    "https://www.xiaohongshu.com/"
-                } else {
-                    "https://www.douyin.com/"
+                match site {
+                    GallerySite::Bili => "https://www.bilibili.com/",
+                    GallerySite::Xhs => "https://www.xiaohongshu.com/",
+                    GallerySite::Douyin => "https://www.douyin.com/",
                 },
             )
             .send()?
             .error_for_status()?;
+        if !image_url_allowed(response.url(), site) {
+            bail!("第 {} 张图片的最终来源不受支持", index + 1);
+        }
         let mut bytes = Vec::new();
         response.take(50_000_001).read_to_end(&mut bytes)?;
         if bytes.len() > 50_000_000 {
@@ -264,6 +294,30 @@ pub fn download_gallery(
     )?;
     progress(1.0);
     Ok(folder.keep())
+}
+
+#[derive(Clone, Copy)]
+enum GallerySite {
+    Bili,
+    Xhs,
+    Douyin,
+}
+
+fn image_url_allowed(url: &reqwest::Url, site: GallerySite) -> bool {
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+    {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default();
+    let under = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    match site {
+        GallerySite::Bili => under("hdslb.com"),
+        GallerySite::Xhs => under("xhscdn.com"),
+        GallerySite::Douyin => under("douyinpic.com") || under("byteimg.com"),
+    }
 }
 
 fn image_extension(bytes: &[u8]) -> Option<&'static str> {
@@ -320,6 +374,9 @@ pub fn douyin_cookie_path() -> PathBuf {
 
 pub(crate) fn configure_command(command: &mut std::process::Command, url: &str) {
     command.env("PYTHONIOENCODING", "utf-8");
+    // User-wide settings may redirect files, enable audio-only extraction or
+    // execute post-download commands. This app always supplies its own options.
+    command.args(["--ignore-config", "--no-config-locations", "--no-colors"]);
     if crate::youtube::link(url).is_some() {
         if crate::youtube::cookie_path().is_file() {
             command.arg("--cookies").arg(crate::youtube::cookie_path());
@@ -377,6 +434,9 @@ fn supported_host(url: &str) -> bool {
     if !matches!(parsed.scheme(), "http" | "https") {
         return false;
     }
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.port().is_some() {
+        return false;
+    }
     let Some(host) = parsed.host_str() else {
         return false;
     };
@@ -394,7 +454,7 @@ fn supported_host(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{image_extension, is_supported, supported_url, Gallery};
+    use super::*;
 
     #[test]
     fn gallery_rejects_other_works_and_external_images() {
@@ -480,6 +540,134 @@ mod tests {
             "https://douyin.com.evil.test/jingxuan?modal_id=123"
         ));
     }
+
+    #[test]
+    fn explicit_json_marker_keeps_unicode_and_does_not_confuse_log_messages() {
+        let path = r"C:\视频输出\作品 [id].webm";
+        let line = format!("__SHIWEN_FILE__{}", serde_json::to_string(path).unwrap());
+        assert_eq!(parse_output_path(&line).unwrap(), Some(PathBuf::from(path)));
+        assert!(parse_output_path("[Merger] Merging formats into video.mp4")
+            .unwrap()
+            .is_none());
+        assert!(parse_output_path("C:/ordinary-log.mp4").unwrap().is_none());
+        assert!(parse_output_path("__SHIWEN_FILE__null").is_err());
+        assert!(parse_output_path("__SHIWEN_FILE__\"\"").is_err());
+        assert_eq!(parse_progress("[download] 42.5% of 20 MiB"), Some(0.425));
+        assert!(parse_progress("[download] NaN%").is_none());
+    }
+
+    #[test]
+    fn staged_result_rejects_escape_missing_empty_and_non_video_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir_in(directory.path()).unwrap();
+        let outside = directory.path().join("other.mp4");
+        std::fs::write(&outside, b"old video").unwrap();
+        assert!(checked_staged_file(&outside, staging.path()).is_err());
+        assert!(checked_staged_file(Path::new("../other.mp4"), staging.path()).is_err());
+        assert!(checked_staged_file(Path::new("missing.mp4"), staging.path()).is_err());
+        assert!(checked_staged_file(staging.path(), staging.path()).is_err());
+        let empty = staging.path().join("empty.mp4");
+        std::fs::write(&empty, []).unwrap();
+        assert!(checked_staged_file(&empty, staging.path()).is_err());
+        let info = staging.path().join("video.info.json");
+        std::fs::write(&info, b"{}").unwrap();
+        assert!(checked_staged_file(&info, staging.path()).is_err());
+        let media = staging.path().join("final.WEBM");
+        std::fs::write(&media, b"finished video placeholder").unwrap();
+        assert_eq!(
+            checked_staged_file(Path::new("final.WEBM"), staging.path()).unwrap(),
+            media.canonicalize().unwrap()
+        );
+        let staging_path = staging.path().to_owned();
+        drop(staging);
+        assert!(!staging_path.exists());
+        assert_eq!(std::fs::read(outside).unwrap(), b"old video");
+    }
+
+    #[test]
+    fn publication_preserves_existing_results_and_uses_safe_windows_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir_in(directory.path()).unwrap();
+        let existing = directory.path().join("同名视频.mp4");
+        std::fs::write(&existing, b"keep original").unwrap();
+        std::fs::create_dir(directory.path().join("同名视频 (1).mp4")).unwrap();
+        let staged = staging.path().join("同名视频.MP4");
+        std::fs::write(&staged, b"new complete video").unwrap();
+        let verified = checked_staged_file(&staged, staging.path()).unwrap();
+        let published = publish_video(&verified, directory.path()).unwrap();
+        assert_eq!(published.file_name().unwrap(), "同名视频 (2).mp4");
+        assert_eq!(std::fs::read(&existing).unwrap(), b"keep original");
+        assert_eq!(std::fs::read(&published).unwrap(), b"new complete video");
+        assert!(!staged.exists());
+        assert_eq!(safe_video_stem("CON"), "_CON");
+        assert_eq!(safe_video_stem("NUL.data"), "_NUL.data");
+        assert_eq!(safe_video_stem("COM1"), "_COM1");
+        assert_eq!(safe_video_stem("LPT²"), "_LPT²");
+        assert_eq!(safe_video_stem(" 标题:第一集. "), "标题_第一集");
+    }
+
+    #[test]
+    fn downloader_configuration_is_isolated_and_error_logs_stay_bounded() {
+        let mut command = std::process::Command::new("yt-dlp");
+        configure_command(&mut command, "https://www.xiaohongshu.com/explore/test");
+        let arguments: Vec<_> = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        assert!(arguments.contains(&"--ignore-config".to_owned()));
+        assert!(arguments.contains(&"--no-config-locations".to_owned()));
+        let error = format!("{}final failure", "x".repeat(40_000));
+        let tail = error_tail(error.as_bytes());
+        assert!(tail.len() <= 16 * 1024);
+        assert!(tail.ends_with("final failure"));
+    }
+
+    #[test]
+    fn gallery_redirect_checks_preserve_platform_cdn_boundaries() {
+        let allowed = |url: &str, site| image_url_allowed(&reqwest::Url::parse(url).unwrap(), site);
+        assert!(allowed("https://i0.hdslb.com/bfs/a.jpg", GallerySite::Bili));
+        assert!(allowed(
+            "https://sns-webpic-qc.xhscdn.com/picture.webp",
+            GallerySite::Xhs
+        ));
+        assert!(allowed(
+            "https://p3-pc-sign.douyinpic.com/image.webp",
+            GallerySite::Douyin
+        ));
+        assert!(allowed(
+            "https://p3.byteimg.com/image.webp",
+            GallerySite::Douyin
+        ));
+        assert!(allowed(
+            "https://p3.byteimg.com:443/image.webp",
+            GallerySite::Douyin
+        ));
+        for invalid in [
+            "http://p3.byteimg.com/image.webp",
+            "https://p3.byteimg.com.evil.test/image.webp",
+            "https://user:pass@p3.byteimg.com/image.webp",
+            "https://p3.byteimg.com:8443/image.webp",
+            "https://127.0.0.1/image.webp",
+        ] {
+            assert!(!allowed(invalid, GallerySite::Douyin), "{invalid}");
+        }
+        assert!(!allowed(
+            "https://p3.byteimg.com/image.webp",
+            GallerySite::Xhs
+        ));
+        assert!(!allowed(
+            "https://sns-webpic-qc.xhscdn.com/picture.webp",
+            GallerySite::Bili
+        ));
+        let source = "https://www.douyin.com/note/123";
+        for invalid in [
+            "https://user:secret@p3.byteimg.com/image.webp",
+            "https://p3.byteimg.com:8443/image.webp",
+        ] {
+            let message = serde_json::json!({"source":source,"images":[invalid]});
+            assert!(Gallery::from_message(&message.to_string(), source).is_err());
+        }
+    }
 }
 
 pub fn probe(url: &str, tool: &Path) -> Result<ExternalVideo> {
@@ -500,8 +688,11 @@ pub fn probe(url: &str, tool: &Path) -> Result<ExternalVideo> {
             "15",
             "--retries",
             "1",
+            "--extractor-retries",
+            "1",
         ])
         .arg(&url)
+        .stdin(Stdio::null())
         .output()
         .context("启动 yt-dlp 失败")?;
     if !output.status.success() {
@@ -526,24 +717,50 @@ pub fn download(
     progress: &dyn Fn(f64),
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(output_dir)?;
+    let output_dir = output_dir.canonicalize().context("无法打开输出目录")?;
+    // Keep every partial file away from previously exported results. TempDir
+    // removes fragments and failed postprocessing outputs on every error path.
+    let staging = tempfile::Builder::new()
+        .prefix(".shiwen-download-")
+        .tempdir_in(&output_dir)?;
     let mut command = std::process::Command::new(tool);
     configure_command(&mut command, url);
     let mut child = command
         .args([
             "--newline",
+            "--progress",
             "--no-playlist",
             "--no-warnings",
             "--no-simulate",
+            "--windows-filenames",
+            "--socket-timeout",
+            "20",
+            "--retries",
+            "2",
+            "--fragment-retries",
+            "2",
+            "--extractor-retries",
+            "1",
+            "--file-access-retries",
+            "1",
+            "--abort-on-unavailable-fragments",
             "-f",
             "bv*+ba/b",
             "--merge-output-format",
             "mp4",
+            "--remux-video",
+            "mp4",
             "-P",
         ])
-        .arg(output_dir)
-        .arg("--print")
-        .arg("after_move:filepath")
+        .arg(staging.path())
+        .args([
+            "-o",
+            "%(title).100B [%(id).32B].%(ext)s",
+            "--print",
+            "after_move:__SHIWEN_FILE__%(filepath)j",
+        ])
         .arg(url)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -557,32 +774,172 @@ pub fn download(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("无法读取 yt-dlp 错误输出"))?;
-    let stderr_handle = std::thread::spawn(move || {
-        let mut buf = String::new();
-        for line in BufReader::new(stderr).lines().flatten() {
-            buf.push_str(&line);
-            buf.push('\n');
-        }
-        buf
-    });
+    let stderr_handle = std::thread::spawn(move || error_tail(stderr));
 
-    let mut saved_path: Option<PathBuf> = None;
+    let mut saved_paths = Vec::new();
+    let mut read_error = None;
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
-        let line = line?;
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                read_error = Some(anyhow!(error).context("无法读取下载进度"));
+                break;
+            }
+        };
         if let Some(pct) = parse_progress(&line) {
-            progress(pct);
-        } else if line.trim_end().ends_with(".mp4") {
-            saved_path = Some(PathBuf::from(line.trim_end()));
+            // Leave room for audio/video merging and final publication.
+            progress(pct * 0.95);
+        }
+        match parse_output_path(&line) {
+            Ok(Some(path)) => {
+                if !saved_paths.contains(&path) {
+                    saved_paths.push(path);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                read_error = Some(error);
+                break;
+            }
         }
     }
 
+    if read_error.is_some() {
+        let _ = child.kill();
+    }
     let status = child.wait()?;
     let stderr_text = stderr_handle.join().unwrap_or_default();
+    if let Some(error) = read_error {
+        return Err(error);
+    }
     if !status.success() {
         bail!("视频下载失败: {stderr_text}");
     }
-    saved_path.ok_or_else(|| anyhow!("下载完成，但没有返回文件路径"))
+    if saved_paths.len() != 1 {
+        bail!(if saved_paths.is_empty() {
+            "下载未返回视频文件，请重新获取链接后重试"
+        } else {
+            "该链接包含多个视频，请打开其中一个视频的独立链接再下载"
+        });
+    }
+    let path = checked_staged_file(&saved_paths[0], staging.path())?;
+    progress(0.98);
+    let published = publish_video(&path, &output_dir)?;
+    progress(1.0);
+    Ok(published)
+}
+
+fn error_tail(mut reader: impl Read) -> String {
+    const LIMIT: usize = 16 * 1024;
+    let mut tail = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while let Ok(length) = reader.read(&mut chunk) {
+        if length == 0 {
+            break;
+        }
+        tail.extend_from_slice(&chunk[..length]);
+        if tail.len() > LIMIT {
+            tail.drain(..tail.len() - LIMIT);
+        }
+    }
+    String::from_utf8_lossy(&tail).trim().to_owned()
+}
+
+fn parse_output_path(line: &str) -> Result<Option<PathBuf>> {
+    let Some(value) = line.strip_prefix("__SHIWEN_FILE__") else {
+        return Ok(None);
+    };
+    let path: String = serde_json::from_str(value).context("下载组件返回的文件位置无法读取")?;
+    if path.is_empty() || path.contains('\0') {
+        bail!("下载组件返回了无效的文件位置");
+    }
+    Ok(Some(PathBuf::from(path)))
+}
+
+fn checked_staged_file(reported: &Path, staging: &Path) -> Result<PathBuf> {
+    let staging = staging.canonicalize()?;
+    let candidate = if reported.is_absolute() {
+        reported.to_owned()
+    } else {
+        staging.join(reported)
+    };
+    let path = candidate
+        .canonicalize()
+        .context("下载完成，但视频文件不存在")?;
+    if !path.starts_with(&staging) || path == staging {
+        bail!("下载组件返回了暂存目录以外的文件，已停止保存");
+    }
+    let metadata = std::fs::metadata(&path)?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        bail!("下载结果为空，未保存无效文件");
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(
+        extension.as_str(),
+        "mp4" | "m4v" | "webm" | "mkv" | "mov" | "flv" | "avi" | "ts" | "3gp"
+    ) {
+        bail!("下载组件没有返回支持的视频文件，未保存无效结果");
+    }
+    Ok(path)
+}
+
+fn safe_video_stem(input: &str) -> String {
+    let mut name = crate::bili::sanitize_filename(input);
+    let device = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let numbered_device = device
+        .strip_prefix("COM")
+        .or_else(|| device.strip_prefix("LPT"))
+        .is_some_and(|number| {
+            matches!(
+                number,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        });
+    if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$") || numbered_device {
+        name.insert(0, '_');
+    }
+    name
+}
+
+fn publish_video(staged: &Path, output_dir: &Path) -> Result<PathBuf> {
+    let extension = staged
+        .extension()
+        .and_then(|value| value.to_str())
+        .context("视频缺少文件格式")?
+        .to_ascii_lowercase();
+    let stem = safe_video_stem(&staged.file_stem().unwrap_or_default().to_string_lossy());
+    // TempPath takes ownership only after the staging boundary has been checked.
+    // persist_noclobber moves within the same filesystem without replacing an
+    // earlier export, even if another operation races to create the same name.
+    let mut source = tempfile::TempPath::try_from_path(staged)?;
+    for index in 0..10_000 {
+        let filename = if index == 0 {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem} ({index}).{extension}")
+        };
+        let destination = output_dir.join(filename);
+        if destination.exists() {
+            continue;
+        }
+        match source.persist_noclobber(&destination) {
+            Ok(()) => return Ok(destination),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                source = error.path
+            }
+            Err(error) => return Err(error.error).context("视频已下载，但保存到输出目录失败"),
+        }
+    }
+    bail!("同名视频过多，请更换输出目录")
 }
 
 fn parse_progress(line: &str) -> Option<f64> {
@@ -591,5 +948,5 @@ fn parse_progress(line: &str) -> Option<f64> {
     let rest = line[idx..].trim_start();
     let pct_end = rest.find('%')?;
     let pct: f64 = rest[..pct_end].trim().parse().ok()?;
-    Some((pct / 100.0).clamp(0.0, 1.0))
+    pct.is_finite().then(|| (pct / 100.0).clamp(0.0, 1.0))
 }

@@ -195,6 +195,7 @@ impl App {
                     (Mode::Douyin, "抖音", Symbol::Play),
                     (Mode::Xhs, "小红书", Symbol::Document),
                     (Mode::Youtube, "YouTube", Symbol::Play),
+                    (Mode::Twitter, "X / 推特", Symbol::Document),
                     (Mode::WebText, "知乎", Symbol::Document),
                     (Mode::WechatChannels, "微信视频号", Symbol::Play),
                     (Mode::WechatArticle, "微信公众号", Symbol::Document),
@@ -237,35 +238,25 @@ impl App {
                                 && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                         {
                             if !selected {
-                                self.mode = mode;
-                                self.clear_wechat();
-                                self.comments = None;
-                                self.comment_selected.clear();
-                                self.comment_window_open = false;
-                                self.status = if mode == Mode::Transcribe {
-                                    "选择音频或视频文件，然后开始识别"
-                                } else {
-                                    "粘贴链接，选择内容类型后获取"
-                                }
-                                .into();
-                                self.youtube = None;
-                                self.external = None;
-                                self.video = None;
-                                self.douyin_article = None;
-                                self.zhihu_content = None;
+                                self.switch_workspace(mode);
                             }
                         }
                     });
                 }
                 if !self.saved_files.is_empty() {
                     ui.add_space(20.0);
-                    ui.label(egui::RichText::new("最近文件").size(11.0).color(MUTED));
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("最近文件").size(11.0).color(MUTED));
+                        if ui.small_button("全部").clicked() {
+                            self.history_open = true;
+                        }
+                    });
                     ui.add_space(6.0);
                     for path in
                         self.saved_files
                             .clone()
                             .into_iter()
-                            .take(if compact { 2 } else { 3 })
+                            .take(if compact { 1 } else { 3 })
                     {
                         ui.horizontal(|ui| {
                             let width = (ui.available_width() - 28.0).max(40.0);
@@ -287,7 +278,14 @@ impl App {
                                 }
                             }
                             ui.menu_button("...", |ui| {
-                                if ui.button("打开文件").clicked() {
+                                if ui
+                                    .button(if path.is_dir() {
+                                        "打开文件夹"
+                                    } else {
+                                        "打开文件"
+                                    })
+                                    .clicked()
+                                {
                                     if let Err(error) = open_saved_file(&path, false) {
                                         self.status = format!("打开失败：{error}");
                                     }
@@ -307,7 +305,7 @@ impl App {
                     if ui
                         .add_sized(
                             [ui.available_width(), 32.0],
-                            egui::Button::new("输出目录").frame(false),
+                            egui::Button::new("设置与输出目录").frame(false),
                         )
                         .on_hover_text(self.output_dir.display().to_string())
                         .clicked()
@@ -332,16 +330,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        let title = match self.mode {
-                            Mode::Subtitle | Mode::Video | Mode::BiliText => "哔哩哔哩",
-                            Mode::Douyin => "抖音",
-                            Mode::Xhs => "小红书",
-                            Mode::Youtube => "YouTube",
-                            Mode::WebText => "知乎",
-                            Mode::Transcribe => "本地转写",
-                            Mode::WechatArticle => "微信公众号",
-                            Mode::WechatChannels => "微信视频号",
-                        };
+                        let title = self.mode.label();
                         ui.label(egui::RichText::new(title).size(17.0).strong().color(INK));
                         ui.label(
                             egui::RichText::new(if self.mode == Mode::Transcribe {
@@ -356,7 +345,24 @@ impl App {
                     ui.add_space((ui.available_width() - 150.0).max(0.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.vertical(|ui| {
-                            if self.is_wechat() {
+                            if self.mode == Mode::Twitter {
+                                if secondary_button(ui, "导入登录状态", !self.busy) {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("登录状态", &["txt"])
+                                        .pick_file()
+                                    {
+                                        self.status = match crate::twitter::import_cookies(&path) {
+                                            Ok(()) => "X 登录状态已导入，可以重新获取".into(),
+                                            Err(error) => format!("X 登录状态导入失败：{error:#}"),
+                                        };
+                                    }
+                                }
+                                ui.label(
+                                    egui::RichText::new("需能正常访问 X")
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
+                            } else if self.is_wechat() {
                                 if secondary_button(
                                     ui,
                                     "打开官方页面",
@@ -476,6 +482,9 @@ impl App {
                                 .fill(egui::Color32::WHITE)
                                 .inner_margin(egui::Margin::same(if compact { 4.0 } else { 10.0 }))
                                 .show(ui, |ui| {
+                                    if compact {
+                                        ui.spacing_mut().item_spacing.y = 3.0;
+                                    }
                                     ui.set_width(ui.available_width());
                                     self.source_card(ui);
                                     self.media_card(ui);
@@ -504,6 +513,8 @@ impl App {
             });
         self.render_comments(ctx);
         self.wechat_preview(ctx);
+        self.twitter_preview(ctx);
+        self.workspace_windows(ctx);
         if self.output_settings_open {
             let mut open = self.output_settings_open;
             egui::Window::new("输出目录")
@@ -514,6 +525,14 @@ impl App {
                 .default_width(460.0)
                 .show(ctx, |ui| {
                     ui.label(egui::RichText::new("文件保存位置").strong());
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "拾文 {} · 设置自动保存",
+                            env!("CARGO_PKG_VERSION")
+                        ))
+                        .small()
+                        .color(MUTED),
+                    );
                     ui.add_space(8.0);
                     ui.add(egui::Label::new(self.output_dir.display().to_string()).truncate())
                         .on_hover_text(self.output_dir.display().to_string());
@@ -538,6 +557,9 @@ impl App {
                             }
                         }
                     });
+                    if let Some(error) = &self.preferences_error {
+                        ui.label(egui::RichText::new(error).color(egui::Color32::RED));
+                    }
                 });
             self.output_settings_open = open;
         }
@@ -555,6 +577,8 @@ impl App {
                         });
                 });
         }
+        self.save_preferences(false);
+        ctx.request_repaint_after(std::time::Duration::from_secs(2));
     }
 
     pub(super) fn file_drop_zone(&mut self, ui: &mut egui::Ui) {
