@@ -1,8 +1,12 @@
 # 拾文
 
-> **下载地址：** [Windows 1.6.1 安装包（最新测试版）](https://github.com/QuanShengLi0508/bilibili-subtitle-downloader/releases/tag/shiwen-v1.6.1) · [全部版本与安卓安装包](https://github.com/QuanShengLi0508/bilibili-subtitle-downloader/releases)
+> **下载地址：** [Windows 1.6.2 安装包（最新测试版）](https://github.com/QuanShengLi0508/bilibili-subtitle-downloader/releases/tag/shiwen-v1.6.2) · [全部版本与安卓安装包](https://github.com/QuanShengLi0508/bilibili-subtitle-downloader/releases)
 
 电脑版按平台分为哔哩哔哩、抖音、小红书、YouTube、X / 推特、知乎、微信视频号和微信公众号，并提供本地音视频转写。各平台支持范围不同，详情见下文。
+
+## 桌面界面更新（Windows 1.6.2 测试版）
+
+重新整理平台导航、登录入口、内容链接、导出选项与处理结果。主操作保持醒目，状态和保存结果只在需要时显示；常用内容尽量在一个窗口内完成。界面使用统一的浅色卡片、深蓝灰文字和蓝色选中态。功能与支持范围沿用 1.6.1。
 
 ## X 直接登录（Windows 1.6.1 测试版）
 

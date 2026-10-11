@@ -1,16 +1,17 @@
 use super::*;
 
-const INK: egui::Color32 = egui::Color32::from_rgb(25, 38, 60);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(101, 116, 139);
-const BORDER: egui::Color32 = egui::Color32::from_gray(230);
-const SOFT_BLUE: egui::Color32 = egui::Color32::from_rgb(245, 245, 245);
+const INK: egui::Color32 = egui::Color32::from_rgb(23, 36, 59);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(108, 124, 149);
+const BORDER: egui::Color32 = egui::Color32::from_rgb(226, 232, 242);
+const SOFT_BLUE: egui::Color32 = egui::Color32::from_rgb(234, 241, 255);
+const BLUE: egui::Color32 = egui::Color32::from_rgb(56, 104, 232);
 
 fn card() -> egui::Frame {
     egui::Frame::default()
         .fill(egui::Color32::WHITE)
         .stroke(egui::Stroke::new(1.0_f32, BORDER))
-        .rounding(14.0)
-        .inner_margin(egui::Margin::same(10.0))
+        .rounding(16.0)
+        .inner_margin(egui::Margin::same(12.0))
 }
 
 fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -19,35 +20,35 @@ fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
 
 fn section(ui: &mut egui::Ui, title: &str, detail: &str) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).size(15.0).strong().color(INK));
-        ui.add(egui::Label::new(egui::RichText::new(detail).size(12.0).color(MUTED)).truncate())
+        ui.label(egui::RichText::new(title).size(13.0).strong().color(INK));
+        ui.add(egui::Label::new(egui::RichText::new(detail).size(11.0).color(MUTED)).truncate())
             .on_hover_text(detail);
     });
-    ui.add_space(6.0);
+    ui.add_space(4.0);
 }
 
 fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     ui.add(
         egui::Button::new(egui::RichText::new(label).size(12.0).color(if selected {
-            ACCENT_DARK
+            BLUE
         } else {
-            MUTED
+            INK
         }))
         .fill(if selected {
             SOFT_BLUE
         } else {
-            egui::Color32::WHITE
+            egui::Color32::from_rgb(248, 250, 253)
         })
         .stroke(egui::Stroke::new(
             1.0_f32,
             if selected {
-                egui::Color32::from_gray(180)
+                egui::Color32::from_rgb(181, 206, 255)
             } else {
                 BORDER
             },
         ))
-        .rounding(8.0)
-        .min_size(egui::vec2(60.0, 28.0)),
+        .rounding(9.0)
+        .min_size(egui::vec2(58.0, 28.0)),
     )
 }
 fn choice<T: PartialEq>(ui: &mut egui::Ui, value: &mut T, option: T, label: impl Into<String>) {
@@ -76,8 +77,17 @@ impl App {
             self.wechat_source_card(ui);
             return;
         }
-        egui::Frame::default().show(ui, |ui| {
+        let compact = ui.ctx().screen_rect().height() < 680.0;
+        let source_frame = egui::Frame::default()
+            .fill(egui::Color32::WHITE)
+            .stroke(egui::Stroke::new(1.0_f32, BORDER))
+            .rounding(16.0)
+            .inner_margin(egui::Margin::same(if compact { 8.0 } else { 14.0 }));
+        source_frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
+            if compact {
+                ui.spacing_mut().item_spacing.y = 4.0;
+            }
             if (self.mode == Mode::Douyin && self.douyin_article_mode)
                 || self.mode == Mode::BiliText
             {
@@ -91,9 +101,14 @@ impl App {
                 self.zhihu_article,
             );
             ui.add_enabled_ui(!self.busy, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if self.mode != Mode::Transcribe {
-                        ui.label(egui::RichText::new("内容类型").size(12.0).color(MUTED));
+                        ui.label(
+                            egui::RichText::new("内容类型")
+                                .size(12.0)
+                                .strong()
+                                .color(INK),
+                        );
                     }
                     match self.mode {
                         Mode::Subtitle | Mode::Video | Mode::BiliText => {
@@ -105,7 +120,7 @@ impl App {
                                 self.mode = Mode::BiliText;
                             }
                             if video {
-                                ui.separator();
+                                ui.add_space(6.0);
                                 choice(ui, &mut self.mode, Mode::Video, "下载视频");
                                 choice(ui, &mut self.mode, Mode::Subtitle, "提取字幕");
                             }
@@ -142,7 +157,7 @@ impl App {
                         _ => {}
                     }
                     if self.mode != Mode::Transcribe {
-                        ui.separator();
+                        ui.add_space(6.0);
                         if secondary_button(ui, "检测评论", !self.busy) {
                             self.spawn_comments();
                         }
@@ -185,9 +200,9 @@ impl App {
                     },
                 );
                 let response = egui::Frame::default()
-                    .fill(egui::Color32::from_gray(250))
+                    .fill(egui::Color32::from_rgb(248, 250, 253))
                     .stroke(egui::Stroke::new(1.0_f32, BORDER))
-                    .rounding(10.0)
+                    .rounding(11.0)
                     .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                     .show(ui, |ui| {
                         ui.add_enabled(
@@ -379,8 +394,6 @@ impl App {
                             });
                         });
                     }
-                } else {
-                    caption(ui, "先获取回答数量，再选择范围与格式；获取时不会保存文件。");
                 }
             } else if self.mode == Mode::Transcribe
                 || self.mode == Mode::Subtitle && self.bili_local_transcribe
@@ -625,41 +638,26 @@ impl App {
                     }
                 }
             }
-            if ui.ctx().screen_rect().height() >= 680.0 {
+            if !compact && matches!(self.mode, Mode::Subtitle | Mode::Transcribe) {
                 ui.add_space(5.0);
                 ui.vertical_centered(|ui| {
                     caption(
                         ui,
-                        match self.mode {
-                            Mode::Twitter | Mode::WechatArticle | Mode::WechatChannels => {
-                                unreachable!()
+                        if self.mode == Mode::Subtitle {
+                            if self.bili_local_transcribe {
+                                "获取视频信息 → 选择分P → 下载音频并本地识别"
+                            } else {
+                                "AI 字幕需要登录后获取，支持多种文档格式"
                             }
-                            Mode::Youtube => {
-                                "先获取 → 下载视频或选择语言导出字幕；无字幕可用本地转写"
-                            }
-                            Mode::BiliText => "先获取图文 → 核对预览 → 确认导出",
-                            Mode::Subtitle => {
-                                if self.bili_local_transcribe {
-                                    "获取视频信息 → 选择分P → 下载音频并本地识别"
-                                } else {
-                                    "AI 字幕需要登录后获取，支持多种文档格式"
-                                }
-                            }
-                            Mode::Video => "高画质视频需要登录 B站，输出为 MP4",
-                            Mode::Douyin if self.douyin_article_mode => {
-                                "先获取文字 → 核对全文预览 → 确认导出"
-                            }
-                            Mode::Douyin => {
-                                "视频保存为 MP4；图文保存配图和文案，需要时会打开抖音网页"
-                            }
-                            Mode::Transcribe => "识别完成后保存所选格式与 SRT 字幕，全程在本机处理",
-                            Mode::WebText => "先获取 → 选择范围和格式 → 确认导出",
-                            Mode::Xhs => "先获取 → 核对图片数量 → 保存配图和文案",
+                        } else {
+                            "识别完成后保存所选格式与 SRT 字幕，全程在本机处理"
                         },
                     );
                 });
             }
-            ui.add_space(6.0);
+            if !compact {
+                ui.add_space(3.0);
+            }
             if self.mode == Mode::Transcribe && !self.ffmpeg_ok {
                 ui.label(
                     egui::RichText::new("音视频处理组件未就绪，请检查应用安装。 ")
@@ -685,7 +683,17 @@ impl App {
         if self.mode == Mode::Youtube && self.youtube_subtitles {
             if let Some(video) = self.youtube.clone() {
                 card().show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(&video.title).strong()).truncate());
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&video.title)
+                                .size(15.0)
+                                .strong()
+                                .color(INK),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&video.title);
                     if video.tracks.is_empty() {
                         caption(ui, "没有可用字幕；可下载视频后使用音视频转写。");
                     } else {
@@ -732,10 +740,24 @@ impl App {
                     } else {
                         "视频已就绪"
                     },
-                    "抖音 / 小红书",
+                    match self.mode {
+                        Mode::Douyin => "抖音",
+                        Mode::Xhs => "小红书",
+                        Mode::Youtube => "YouTube",
+                        _ => "哔哩哔哩",
+                    },
                 );
-                ui.label(egui::RichText::new(video.title).size(16.0).strong());
-                ui.add_space(6.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&video.title)
+                            .size(15.0)
+                            .strong()
+                            .color(INK),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(&video.title);
+                ui.add_space(3.0);
                 if let Some(gallery) = &video.gallery {
                     caption(
                         ui,
@@ -757,14 +779,16 @@ impl App {
                 ) {
                     self.spawn_download_external();
                 }
-                caption(
-                    ui,
-                    if is_gallery {
-                        "按顺序保存到独立文件夹，完成后可直接打开"
-                    } else {
-                        "自动选择最佳画质，保存为 MP4"
-                    },
-                );
+                if ui.ctx().screen_rect().height() >= 680.0 {
+                    caption(
+                        ui,
+                        if is_gallery {
+                            "图片按顺序保存，完成后可直接打开"
+                        } else {
+                            "自动选择最佳画质，保存为 MP4"
+                        },
+                    );
+                }
             });
             ui.add_space(6.0);
             return;
@@ -779,8 +803,12 @@ impl App {
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             let _ = bvid;
-            ui.label(egui::RichText::new(&title).size(16.0).strong());
-            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(egui::RichText::new(&title).size(15.0).strong().color(INK))
+                    .truncate(),
+            )
+            .on_hover_text(&title);
+            ui.add_space(4.0);
             if pages.len() > 1 {
                 let previous_page = self.selected_page;
                 ui.add_enabled_ui(!self.busy, |ui| {
@@ -884,49 +912,68 @@ impl App {
     }
 
     pub(super) fn result_card(&mut self, ui: &mut egui::Ui) {
-        if self.status == "粘贴B站视频链接，然后点「获取」" && !self.busy {
+        if !self.busy
+            && matches!(
+                self.status.as_str(),
+                "粘贴B站视频链接，然后点「获取」"
+                    | "粘贴内容链接，自动识别平台；获取后预览并保存"
+                    | "已切换内容类型，请重新获取"
+                    | "文件已就绪，选择格式后点击开始识别"
+            )
+        {
+            self.reveal_result = false;
             return;
         }
-        ui.add_space(if ui.ctx().screen_rect().height() < 680.0 {
-            4.0
-        } else {
-            10.0
-        });
-        ui.horizontal(|ui| {
-            if self.busy {
-                ui.spinner();
-            } else {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
-                super::reference::icon(
-                    ui.painter(),
-                    rect,
-                    super::reference::Symbol::Info,
-                    status_color(&self.status),
-                );
-            }
-            let message = if self.status.starts_with("已保存:") || self.status.contains("导出完成")
-            {
-                "保存完成，可从左侧最近文件直接打开".into()
-            } else {
-                self.status.clone()
-            };
-            ui.add_sized(
-                [(ui.available_width() - 54.0).max(80.0), 24.0],
-                egui::Label::new(egui::RichText::new(&message).size(12.0).color(MUTED)).truncate(),
-            )
-            .on_hover_text(&self.status);
-            if ui.small_button("详情").clicked() {
-                self.status_details_open = true;
-            }
-        });
-        if let Some(progress) = self.video_progress.filter(|_| self.busy) {
-            ui.add(
-                egui::ProgressBar::new(progress as f32)
-                    .desired_width(ui.available_width())
-                    .show_percentage(),
-            );
-        }
+        let compact = ui.ctx().screen_rect().height() < 680.0;
+        ui.add_space(if compact { 3.0 } else { 8.0 });
+        egui::Frame::default()
+            .fill(egui::Color32::from_rgb(247, 249, 253))
+            .stroke(egui::Stroke::new(1.0_f32, BORDER))
+            .rounding(11.0)
+            .inner_margin(egui::Margin::symmetric(
+                10.0,
+                if compact { 5.0 } else { 7.0 },
+            ))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    if self.busy {
+                        ui.spinner();
+                    } else {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
+                        super::reference::icon(
+                            ui.painter(),
+                            rect,
+                            super::reference::Symbol::Info,
+                            status_color(&self.status),
+                        );
+                    }
+                    let message = if self.status.starts_with("已保存:")
+                        || self.status.contains("导出完成")
+                    {
+                        "保存完成，可从左侧最近文件直接打开".into()
+                    } else {
+                        self.status.clone()
+                    };
+                    ui.add_sized(
+                        [(ui.available_width() - 50.0).max(80.0), 22.0],
+                        egui::Label::new(egui::RichText::new(&message).size(12.0).color(INK))
+                            .truncate(),
+                    )
+                    .on_hover_text(&self.status);
+                    if ui.add(egui::Button::new("详情").frame(false)).clicked() {
+                        self.status_details_open = true;
+                    }
+                });
+                if let Some(progress) = self.video_progress.filter(|_| self.busy) {
+                    ui.add(
+                        egui::ProgressBar::new(progress as f32)
+                            .desired_width(ui.available_width())
+                            .show_percentage(),
+                    );
+                }
+            });
         self.reveal_result = false;
     }
 

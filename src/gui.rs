@@ -1347,7 +1347,7 @@ mod twitter;
 mod wechat;
 mod workspace;
 
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(56, 104, 232);
 
 fn recent_saved_file(dir: &std::path::Path) -> Option<PathBuf> {
     std::fs::read_dir(dir)
@@ -1384,7 +1384,7 @@ fn open_saved_file(path: &std::path::Path, select: bool) -> Result<()> {
     command.spawn()?;
     Ok(())
 }
-const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(45, 45, 45);
+const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(38, 76, 181);
 
 fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     ui.add_enabled(
@@ -1406,8 +1406,11 @@ fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     ui.add_enabled(
         enabled,
         egui::Button::new(egui::RichText::new(label).size(12.0).color(ACCENT_DARK))
-            .fill(egui::Color32::from_gray(245))
-            .stroke(egui::Stroke::NONE)
+            .fill(egui::Color32::from_rgb(246, 249, 255))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgb(220, 230, 248),
+            ))
             .min_size(egui::vec2(78.0, 34.0))
             .rounding(9.0),
     )
@@ -1421,23 +1424,23 @@ fn status_color(status: &str) -> egui::Color32 {
         || status.contains("没有")
         || status.contains("未登录")
     {
-        egui::Color32::from_rgb(0xE0, 0x4F, 0x5F)
+        egui::Color32::from_rgb(0xD5, 0x50, 0x64)
     } else if status.contains("已保存") || status.contains("成功") || status.contains("获取到")
     {
-        egui::Color32::from_rgb(0x2E, 0xA0, 0x4E)
+        egui::Color32::from_rgb(0x1E, 0x9B, 0x77)
     } else {
-        egui::Color32::from_gray(150)
+        ACCENT
     }
 }
 
 fn apply_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::light();
-    style.visuals.panel_fill = egui::Color32::WHITE;
+    style.visuals.panel_fill = egui::Color32::from_rgb(245, 247, 251);
     style.visuals.window_fill = egui::Color32::WHITE;
-    style.visuals.override_text_color = Some(egui::Color32::from_rgb(25, 38, 60));
-    style.visuals.extreme_bg_color = egui::Color32::from_rgb(250, 251, 253);
-    style.visuals.selection.bg_fill = egui::Color32::from_gray(225);
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(23, 36, 59));
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(248, 250, 253);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(221, 234, 255);
     style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT);
     style.visuals.hyperlink_color = ACCENT_DARK;
     for (text_style, size) in [
@@ -1450,17 +1453,18 @@ fn apply_style(ctx: &egui::Context) {
             .text_styles
             .insert(text_style, egui::FontId::proportional(size));
     }
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_gray(250);
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
     style.visuals.widgets.inactive.bg_stroke =
-        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(225));
-    style.visuals.widgets.inactive.rounding = egui::Rounding::same(7.0);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_gray(241);
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
-    style.visuals.widgets.hovered.rounding = egui::Rounding::same(7.0);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_gray(232);
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(222, 229, 240));
+    style.visuals.widgets.inactive.rounding = egui::Rounding::same(9.0);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(240, 246, 255);
+    style.visuals.widgets.hovered.bg_stroke =
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(163, 191, 246));
+    style.visuals.widgets.hovered.rounding = egui::Rounding::same(9.0);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(229, 239, 255);
     style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
-    style.visuals.widgets.active.rounding = egui::Rounding::same(7.0);
-    style.visuals.window_rounding = egui::Rounding::same(14.0);
+    style.visuals.widgets.active.rounding = egui::Rounding::same(9.0);
+    style.visuals.window_rounding = egui::Rounding::same(16.0);
     style.spacing.item_spacing = egui::vec2(8.0, 4.0);
     style.spacing.button_padding = egui::vec2(10.0, 5.0);
     style.spacing.interact_size.y = 32.0;

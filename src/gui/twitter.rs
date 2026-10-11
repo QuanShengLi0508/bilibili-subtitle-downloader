@@ -1,5 +1,31 @@
 use super::*;
 
+const X_INK: egui::Color32 = egui::Color32::from_rgb(23, 36, 59);
+const X_MUTED: egui::Color32 = egui::Color32::from_rgb(108, 124, 149);
+const X_BLUE: egui::Color32 = egui::Color32::from_rgb(56, 104, 232);
+const X_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 230, 242);
+
+fn x_chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(12.0).color(if selected {
+            X_BLUE
+        } else {
+            X_MUTED
+        }))
+        .fill(if selected {
+            egui::Color32::from_rgb(236, 242, 255)
+        } else {
+            egui::Color32::WHITE
+        })
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            if selected { X_BLUE } else { X_BORDER },
+        ))
+        .rounding(8.0)
+        .min_size(egui::vec2(0.0, 27.0)),
+    )
+}
+
 impl App {
     fn spawn_twitter(&mut self, browser: bool) {
         let Some(input) = crate::twitter::link(&self.link) else {
@@ -64,33 +90,44 @@ impl App {
     }
 
     pub(super) fn twitter_source_card(&mut self, ui: &mut egui::Ui) {
+        let compact = ui.ctx().screen_rect().height() < 680.0;
         ui.add_enabled_ui(!self.busy, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label("内容类型");
-                ui.selectable_value(&mut self.twitter_video_mode, false, "图文 / 文字");
-                ui.selectable_value(&mut self.twitter_video_mode, true, "视频");
+                ui.label(egui::RichText::new("内容类型").size(12.0).color(X_MUTED));
+                if x_chip(ui, "图文 / 文字", !self.twitter_video_mode).clicked() {
+                    self.twitter_video_mode = false;
+                }
+                if x_chip(ui, "视频", self.twitter_video_mode).clicked() {
+                    self.twitter_video_mode = true;
+                }
                 ui.separator();
-                if ui.button("检测评论").clicked() {
+                if secondary_button(ui, "检测评论", true) {
                     self.spawn_comments();
                 }
-                if self.comments.is_some() && ui.button("选择评论").clicked() {
+                if self.comments.is_some() && secondary_button(ui, "选择评论", true) {
                     self.comment_window_open = true;
                 }
             });
         });
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("帖子链接").strong());
+        ui.add_space(if compact { 6.0 } else { 10.0 });
+        ui.label(
+            egui::RichText::new("帖子链接")
+                .size(13.0)
+                .strong()
+                .color(X_INK),
+        );
         let response = egui::Frame::default()
-            .fill(egui::Color32::from_gray(250))
-            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(225)))
+            .fill(egui::Color32::from_rgb(249, 251, 255))
+            .stroke(egui::Stroke::new(1.0_f32, X_BORDER))
             .rounding(10.0)
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .inner_margin(egui::Margin::symmetric(12.0, 7.0))
             .show(ui, |ui| {
                 ui.add_enabled(
                     !self.busy,
                     egui::TextEdit::singleline(&mut self.link)
                         .frame(false)
                         .desired_width(ui.available_width())
+                        .margin(egui::vec2(2.0, 3.0))
                         .hint_text("https://x.com/作者/status/… 或 twitter.com 分享链接"),
                 )
             })
@@ -101,63 +138,101 @@ impl App {
         if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.busy {
             self.spawn_twitter(false);
         }
-        ui.add_space(8.0);
+        ui.add_space(if compact { 6.0 } else { 10.0 });
         if !self.twitter_video_mode {
             ui.add_enabled_ui(!self.busy, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("导出格式");
+                    ui.label(egui::RichText::new("导出格式").size(12.0).color(X_MUTED));
                     for format in TextFormat::ALL {
-                        ui.selectable_value(&mut self.text_format, format, format.label());
+                        if x_chip(ui, format.label(), self.text_format == format).clicked() {
+                            self.text_format = format;
+                        }
                     }
                 });
             });
         }
         if let Some(post) = self.twitter_post.clone() {
-            ui.add_space(8.0);
-            ui.add(egui::Label::new(egui::RichText::new(&post.title).strong()).truncate());
-            ui.add(
-                egui::Label::new(format!(
-                    "{} · {} 张配图 · {} 个视频",
-                    post.author,
-                    post.images.len(),
-                    post.video_count
-                ))
-                .truncate(),
-            );
-            let excerpt = post
-                .body
-                .chars()
-                .take(120)
-                .collect::<String>()
-                .replace('\n', " ");
-            ui.add(egui::Label::new(egui::RichText::new(excerpt).small()).truncate());
-            if let Some(warning) = &post.warning {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(warning)
-                            .small()
-                            .color(egui::Color32::from_rgb(150, 95, 30)),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(warning);
-            }
-            ui.horizontal(|ui| {
-                if secondary_button(ui, "查看全文", true) {
-                    self.twitter_preview_open = true;
-                }
-                if secondary_button(ui, "重新获取", !self.busy) {
-                    self.spawn_twitter(false);
-                }
-            });
-            if self.twitter_video_mode && post.video_count == 0 {
-                ui.label(
-                    egui::RichText::new("未检测到视频，可切换到图文 / 文字，或在官方网页确认。 ")
-                        .small(),
-                );
-            }
+            ui.add_space(if compact { 6.0 } else { 10.0 });
+            egui::Frame::default()
+                .fill(egui::Color32::from_rgb(247, 250, 255))
+                .stroke(egui::Stroke::new(1.0_f32, X_BORDER))
+                .rounding(11.0)
+                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("已获取")
+                                .size(11.0)
+                                .strong()
+                                .color(X_BLUE),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&post.title)
+                                    .size(13.0)
+                                    .strong()
+                                    .color(X_INK),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&post.title);
+                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} · {} 张配图 · {} 个视频",
+                            post.author,
+                            post.images.len(),
+                            post.video_count
+                        ))
+                        .size(11.0)
+                        .color(X_MUTED),
+                    );
+                    if !compact {
+                        let excerpt = post
+                            .body
+                            .chars()
+                            .take(120)
+                            .collect::<String>()
+                            .replace('\n', " ");
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(excerpt).size(11.0).color(X_MUTED),
+                            )
+                            .truncate(),
+                        );
+                    }
+                    if let Some(warning) = &post.warning {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(warning)
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(150, 95, 30)),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(warning);
+                    }
+                    ui.horizontal(|ui| {
+                        if secondary_button(ui, "查看全文", true) {
+                            self.twitter_preview_open = true;
+                        }
+                        if secondary_button(ui, "重新获取", !self.busy) {
+                            self.spawn_twitter(false);
+                        }
+                    });
+                    if self.twitter_video_mode && post.video_count == 0 {
+                        ui.label(
+                            egui::RichText::new(
+                                "未检测到视频，可切换到图文 / 文字，或在官方网页确认。",
+                            )
+                            .size(11.0)
+                            .color(X_MUTED),
+                        );
+                    }
+                });
         }
-        ui.add_space(10.0);
+        ui.add_space(if compact { 8.0 } else { 12.0 });
         let ready = self.twitter_post.is_some();
         let enabled = !self.busy
             && !self.link.trim().is_empty()
@@ -189,8 +264,8 @@ impl App {
                 self.spawn_twitter(false);
             }
         }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.add_space(if compact { 4.0 } else { 7.0 });
+        ui.horizontal_wrapped(|ui| {
             if secondary_button(
                 ui,
                 "官方网页读取",
@@ -198,17 +273,16 @@ impl App {
             ) {
                 self.spawn_twitter(true);
             }
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new("长文不完整或需要登录时，可在网页内展开后读取。").small(),
-                )
-                .wrap(),
+            ui.label(
+                egui::RichText::new("长文不完整或需要登录时，在网页内展开后读取")
+                    .size(11.0)
+                    .color(X_MUTED),
             );
         });
         ui.label(
             egui::RichText::new("仅获取当前帖子；评论需单独检测并勾选，图片文字不做 OCR。")
-                .small()
-                .color(egui::Color32::GRAY),
+                .size(11.0)
+                .color(X_MUTED),
         );
     }
 

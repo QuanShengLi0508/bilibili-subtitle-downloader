@@ -1,8 +1,10 @@
 use super::*;
 
-const INK: egui::Color32 = egui::Color32::from_rgb(25, 38, 60);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(101, 116, 139);
-const BLUE: egui::Color32 = egui::Color32::from_rgb(35, 35, 35);
+const INK: egui::Color32 = egui::Color32::from_rgb(23, 36, 59);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(108, 124, 149);
+const BLUE: egui::Color32 = egui::Color32::from_rgb(56, 104, 232);
+const CANVAS: egui::Color32 = egui::Color32::from_rgb(245, 247, 251);
+const LINE: egui::Color32 = egui::Color32::from_rgb(225, 232, 242);
 
 #[derive(Clone, Copy)]
 pub(super) enum Symbol {
@@ -109,11 +111,11 @@ pub(super) fn wide_button(
             ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
         ui.painter().rect_filled(
             rect,
-            12.0,
+            10.0,
             if !ui.is_enabled() {
-                egui::Color32::from_gray(207)
+                egui::Color32::from_rgb(203, 214, 233)
             } else if response.hovered() {
-                egui::Color32::from_gray(62)
+                egui::Color32::from_rgb(37, 85, 210)
             } else {
                 BLUE
             },
@@ -147,11 +149,26 @@ pub(super) fn wide_button(
     .inner
 }
 
+fn header_action(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new(label).size(12.0).strong().color(BLUE))
+            .fill(egui::Color32::from_rgb(246, 249, 255))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgb(208, 223, 249),
+            ))
+            .rounding(9.0)
+            .min_size(egui::vec2(88.0, 29.0)),
+    )
+    .clicked()
+}
+
 impl App {
     pub(super) fn render_reference(&mut self, ctx: &egui::Context) {
         self.poll_messages(ctx);
         let compact = ctx.screen_rect().height() < 680.0;
-        let margin = if compact { 16.0 } else { 24.0 };
+        let margin = if compact { 12.0 } else { 20.0 };
         if self.busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -174,22 +191,35 @@ impl App {
             .exact_width(if ctx.screen_rect().width() < 900.0 {
                 142.0
             } else {
-                178.0
+                166.0
             })
             .resizable(false)
             .frame(
                 egui::Frame::default()
-                    .fill(egui::Color32::from_rgb(249, 249, 249))
-                    .inner_margin(egui::Margin::symmetric(12.0, 16.0)),
+                    .fill(egui::Color32::WHITE)
+                    .stroke(egui::Stroke::new(1.0_f32, LINE))
+                    .inner_margin(egui::Margin::symmetric(12.0, 14.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.image((self.logo.id(), egui::vec2(28.0, 28.0)));
-                    ui.label(egui::RichText::new("拾文").size(20.0).strong().color(INK));
+                    ui.image((self.logo.id(), egui::vec2(32.0, 32.0)));
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("拾文").size(18.0).strong().color(INK));
+                        ui.label(
+                            egui::RichText::new("内容保存工作台")
+                                .size(10.0)
+                                .color(MUTED),
+                        );
+                    });
                 });
-                ui.add_space(if compact { 14.0 } else { 23.0 });
-                ui.label(egui::RichText::new("内容平台").size(11.0).color(MUTED));
-                ui.add_space(7.0);
+                ui.add_space(if compact { 12.0 } else { 19.0 });
+                ui.label(
+                    egui::RichText::new("内容平台")
+                        .size(11.0)
+                        .strong()
+                        .color(MUTED),
+                );
+                ui.add_space(5.0);
                 for (mode, label, symbol) in [
                     (Mode::Subtitle, "哔哩哔哩", Symbol::Play),
                     (Mode::Douyin, "抖音", Symbol::Play),
@@ -206,28 +236,42 @@ impl App {
                             && matches!(self.mode, Mode::Video | Mode::BiliText));
                     ui.add_enabled_ui(!self.busy, |ui| {
                         let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), if compact { 33.0 } else { 37.0 }),
+                            egui::vec2(ui.available_width(), if compact { 33.0 } else { 38.0 }),
                             egui::Sense::click(),
                         );
                         if selected || response.hovered() {
                             ui.painter().rect_filled(
                                 rect,
-                                8.0,
-                                egui::Color32::from_gray(if selected { 233 } else { 241 }),
+                                9.0,
+                                if selected {
+                                    egui::Color32::from_rgb(233, 240, 255)
+                                } else {
+                                    CANVAS
+                                },
                             );
                         }
-                        let color = if selected { INK } else { MUTED };
+                        if selected {
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(rect.left() + 2.0, rect.center().y - 8.0),
+                                    egui::vec2(3.0, 16.0),
+                                ),
+                                2.0,
+                                BLUE,
+                            );
+                        }
+                        let color = if selected { BLUE } else { MUTED };
                         icon(
                             ui.painter(),
                             egui::Rect::from_center_size(
-                                egui::pos2(rect.left() + 17.0, rect.center().y),
-                                egui::vec2(17.0, 17.0),
+                                egui::pos2(rect.left() + 19.0, rect.center().y),
+                                egui::vec2(16.0, 16.0),
                             ),
                             symbol,
                             color,
                         );
                         ui.painter().text(
-                            egui::pos2(rect.left() + 35.0, rect.center().y),
+                            egui::pos2(rect.left() + 38.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
                             label,
                             egui::FontId::proportional(13.0),
@@ -244,9 +288,16 @@ impl App {
                     });
                 }
                 if !self.saved_files.is_empty() {
-                    ui.add_space(20.0);
+                    ui.add_space(if compact { 9.0 } else { 16.0 });
+                    ui.separator();
+                    ui.add_space(3.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("最近文件").size(11.0).color(MUTED));
+                        ui.label(
+                            egui::RichText::new("最近文件")
+                                .size(11.0)
+                                .strong()
+                                .color(MUTED),
+                        );
                         if ui.small_button("全部").clicked() {
                             self.history_open = true;
                         }
@@ -304,8 +355,13 @@ impl App {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     if ui
                         .add_sized(
-                            [ui.available_width(), 32.0],
-                            egui::Button::new("设置与输出目录").frame(false),
+                            [ui.available_width(), 34.0],
+                            egui::Button::new(
+                                egui::RichText::new("输出与设置").size(12.0).color(INK),
+                            )
+                            .fill(CANVAS)
+                            .stroke(egui::Stroke::new(1.0_f32, LINE))
+                            .rounding(9.0),
                         )
                         .on_hover_text(self.output_dir.display().to_string())
                         .clicked()
@@ -331,22 +387,22 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         let title = self.mode.label();
-                        ui.label(egui::RichText::new(title).size(17.0).strong().color(INK));
+                        ui.label(egui::RichText::new(title).size(19.0).strong().color(INK));
                         ui.label(
                             egui::RichText::new(if self.mode == Mode::Transcribe {
-                                "音频与视频，整理成文字"
+                                "音视频转写与多角色识别"
                             } else {
-                                "保存视频、图文和文字"
+                                "获取、预览并保存内容"
                             })
                             .size(11.0)
                             .color(MUTED),
                         );
                     });
-                    ui.add_space((ui.available_width() - 150.0).max(0.0));
+                    ui.add_space((ui.available_width() - 176.0).max(0.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.vertical(|ui| {
                             if self.mode == Mode::Twitter {
-                                if secondary_button(ui, "X 登录", !self.busy) {
+                                if header_action(ui, "X 登录", !self.busy) {
                                     self.spawn_twitter_login();
                                 }
                                 ui.label(
@@ -359,7 +415,7 @@ impl App {
                                     .color(MUTED),
                                 );
                             } else if self.is_wechat() {
-                                if secondary_button(
+                                if header_action(
                                     ui,
                                     "打开官方页面",
                                     !self.busy && !self.link.trim().is_empty(),
@@ -372,7 +428,7 @@ impl App {
                                         .color(MUTED),
                                 );
                             } else if self.mode == Mode::Youtube {
-                                if secondary_button(ui, "导入登录状态", !self.busy) {
+                                if header_action(ui, "导入登录状态", !self.busy) {
                                     if let Some(path) = rfd::FileDialog::new()
                                         .add_filter("登录状态", &["txt"])
                                         .pick_file()
@@ -389,7 +445,7 @@ impl App {
                                         .color(MUTED),
                                 );
                             } else if self.mode == Mode::Douyin {
-                                if secondary_button(ui, "抖音登录", !self.busy) {
+                                if header_action(ui, "抖音登录", !self.busy) {
                                     self.spawn_douyin_login();
                                 }
                                 ui.label(
@@ -404,7 +460,7 @@ impl App {
                                     .color(MUTED),
                                 );
                             } else if self.mode == Mode::Xhs {
-                                if secondary_button(ui, "小红书登录", !self.busy) {
+                                if header_action(ui, "小红书登录", !self.busy) {
                                     self.spawn_xhs_login();
                                 }
                                 ui.label(
@@ -413,7 +469,7 @@ impl App {
                                         .color(MUTED),
                                 );
                             } else if self.mode == Mode::WebText {
-                                if secondary_button(ui, "知乎登录", !self.busy) {
+                                if header_action(ui, "知乎登录", !self.busy) {
                                     self.spawn_zhihu_login();
                                 }
                                 ui.label(
@@ -435,14 +491,14 @@ impl App {
                                         .color(MUTED),
                                 );
                             } else if self.logged_in {
-                                if secondary_button(ui, "退出登录", !self.busy) {
+                                if header_action(ui, "退出登录", !self.busy) {
                                     Client::clear_saved_cookies();
                                     self.logged_in = false;
                                     self.status = "已退出登录".into();
                                 }
                                 ui.label(egui::RichText::new("B站已登录").size(12.0).color(MUTED));
                             } else {
-                                if secondary_button(ui, "扫码登录", !self.busy) {
+                                if header_action(ui, "扫码登录", !self.busy) {
                                     self.spawn_qr_login();
                                 }
                                 ui.label(
@@ -458,16 +514,16 @@ impl App {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::default()
-                    .fill(egui::Color32::WHITE)
+                    .fill(CANVAS)
                     .inner_margin(egui::Margin::symmetric(
                         margin,
-                        if compact { 10.0 } else { 16.0 },
+                        if compact { 8.0 } else { 12.0 },
                     )),
             )
             .show(ctx, |ui| {
                 let bottom = ui.max_rect().bottom();
                 ui.horizontal(|ui| {
-                    let width = ui.available_width().min(780.0);
+                    let width = ui.available_width().min(840.0);
                     ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
                     ui.allocate_ui_with_layout(
                         egui::vec2(width, 0.0),
@@ -476,7 +532,9 @@ impl App {
                             ui.set_width(width);
                             egui::Frame::default()
                                 .fill(egui::Color32::WHITE)
-                                .inner_margin(egui::Margin::same(if compact { 4.0 } else { 10.0 }))
+                                .stroke(egui::Stroke::new(1.0_f32, LINE))
+                                .rounding(15.0)
+                                .inner_margin(egui::Margin::same(if compact { 8.0 } else { 12.0 }))
                                 .show(ui, |ui| {
                                     if compact {
                                         ui.spacing_mut().item_spacing.y = 3.0;
@@ -489,6 +547,25 @@ impl App {
                         },
                     );
                 });
+                if !compact
+                    && self.link.trim().is_empty()
+                    && self.media_file.is_none()
+                    && !self.busy
+                {
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        let width = ui.available_width().min(840.0);
+                        ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(width, 0.0),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                ui.set_width(width);
+                                self.quick_start_card(ui);
+                            },
+                        );
+                    });
+                }
                 #[cfg(test)]
                 if ui.min_rect().bottom() > bottom + 1.0 {
                     eprintln!(
@@ -577,38 +654,135 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
     }
 
+    fn quick_start_card(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::default()
+            .fill(egui::Color32::WHITE)
+            .stroke(egui::Stroke::new(1.0_f32, LINE))
+            .rounding(15.0)
+            .inner_margin(egui::Margin::symmetric(16.0, 13.0))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if let Some(path) = self.saved_files.first().cloned() {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("最近保存")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(MUTED),
+                            );
+                            let name = path.file_name().unwrap_or_default().to_string_lossy();
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(name).size(14.0).color(INK))
+                                    .truncate(),
+                            )
+                            .on_hover_text(path.display().to_string());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if secondary_button(ui, "所在位置", true) {
+                                if let Err(error) = open_saved_file(&path, true) {
+                                    self.status = format!("打开失败：{error}");
+                                }
+                            }
+                            if secondary_button(ui, "打开文件", true) {
+                                if let Err(error) = open_saved_file(&path, false) {
+                                    self.status = format!("打开失败：{error}");
+                                }
+                            }
+                        });
+                    });
+                } else {
+                    ui.label(
+                        egui::RichText::new("简单三步，保存你需要的内容")
+                            .size(14.0)
+                            .strong()
+                            .color(INK),
+                    );
+                    ui.add_space(7.0);
+                    ui.columns(3, |columns| {
+                        for (index, (title, detail)) in [
+                            (
+                                if self.mode == Mode::Transcribe {
+                                    "选择音视频文件"
+                                } else {
+                                    "粘贴内容链接"
+                                },
+                                if self.mode == Mode::Transcribe {
+                                    "全程在本机处理"
+                                } else {
+                                    "分享文字也可以"
+                                },
+                            ),
+                            ("先核对预览", "确认正文与媒体"),
+                            ("保存并打开", "不用去文件夹里找"),
+                        ]
+                        .iter()
+                        .enumerate()
+                        {
+                            columns[index].horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("0{}", index + 1))
+                                        .size(14.0)
+                                        .strong()
+                                        .color(BLUE),
+                                );
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(*title).size(12.0).strong().color(INK),
+                                    );
+                                    ui.label(egui::RichText::new(*detail).size(11.0).color(MUTED));
+                                });
+                            });
+                        }
+                    });
+                }
+            });
+    }
+
     pub(super) fn file_drop_zone(&mut self, ui: &mut egui::Ui) {
         let hovered = ui.input(|input| !input.raw.hovered_files.is_empty()) && !self.busy;
         egui::Frame::default()
             .fill(if hovered {
-                egui::Color32::from_rgb(227, 240, 255)
+                egui::Color32::from_rgb(233, 241, 255)
             } else {
-                egui::Color32::from_gray(250)
+                egui::Color32::from_rgb(248, 251, 255)
             })
-            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(222)))
-            .rounding(13.0)
-            .inner_margin(egui::Margin::same(14.0))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                if hovered {
+                    BLUE
+                } else {
+                    egui::Color32::from_rgb(207, 222, 246)
+                },
+            ))
+            .rounding(12.0)
+            .inner_margin(egui::Margin::same(12.0))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let rect = egui::Rect::from_min_size(
-                    ui.cursor().min,
-                    egui::vec2(ui.available_width(), 70.0),
-                );
-                dashed_border(ui.painter(), rect, egui::Color32::from_gray(218));
+                let compact = ui.ctx().screen_rect().height() < 680.0;
+                let zone_height = if compact { 58.0 } else { 64.0 };
+                let zone_width = ui.available_width();
+                let choose_width = if zone_width < 600.0 { 128.0 } else { 148.0 };
+                let text_width =
+                    (zone_width - 32.0 - choose_width - 2.0 * ui.spacing().item_spacing.x)
+                        .max(120.0);
+                let rect =
+                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(zone_width, zone_height));
+                dashed_border(ui.painter(), rect, egui::Color32::from_rgb(197, 216, 245));
                 ui.horizontal(|ui| {
                     let (icon_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(38.0, 70.0), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(32.0, zone_height), egui::Sense::hover());
                     icon(
                         ui.painter(),
-                        egui::Rect::from_center_size(icon_rect.center(), egui::vec2(30.0, 30.0)),
+                        egui::Rect::from_center_size(icon_rect.center(), egui::vec2(26.0, 26.0)),
                         Symbol::Folder,
                         BLUE,
                     );
                     ui.allocate_ui_with_layout(
-                        egui::vec2((ui.available_width() - 190.0).max(150.0), 70.0),
+                        egui::vec2(text_width, zone_height),
                         egui::Layout::top_down(egui::Align::LEFT),
                         |ui| {
-                            ui.add_space(10.0);
+                            ui.add_space(if compact { 5.0 } else { 7.0 });
                             let label = if hovered {
                                 "松开鼠标，添加文件".into()
                             } else {
@@ -620,20 +794,22 @@ impl App {
                             };
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(label).size(16.0).strong().color(INK),
+                                    egui::RichText::new(label).size(14.0).strong().color(INK),
                                 )
                                 .truncate(),
                             );
                             ui.label(
                                 egui::RichText::new("拖入文件，或点击右侧选择文件")
-                                    .size(12.0)
-                                    .color(MUTED),
-                            );
-                            ui.label(
-                                egui::RichText::new("支持 MP4、MKV、MP3、WAV 等格式")
                                     .size(11.0)
                                     .color(MUTED),
                             );
+                            if !compact {
+                                ui.label(
+                                    egui::RichText::new("支持 MP4、MKV、MP3、WAV 等格式")
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
+                            }
                         },
                     );
                     if wide_button(
@@ -643,7 +819,7 @@ impl App {
                         } else {
                             "选择文件"
                         },
-                        176.0,
+                        choose_width,
                         !self.busy,
                         Symbol::Folder,
                     ) {
