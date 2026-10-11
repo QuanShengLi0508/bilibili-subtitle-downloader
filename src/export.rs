@@ -71,9 +71,14 @@ fn word_bytes(title: &str, body: &str) -> Result<Vec<u8>> {
 
 mod pdf_layout;
 mod text_layout;
+mod wechat_pdf;
 mod word_layout;
 fn pdf_bytes(title: &str, body: &str) -> Result<Vec<u8>> {
     pdf_layout::bytes(title, body)
+}
+
+pub(crate) fn wechat_pdf_bytes(title: &str, body: &str, images_dir: &Path) -> Result<Vec<u8>> {
+    wechat_pdf::bytes(title, body, images_dir)
 }
 
 #[cfg(test)]

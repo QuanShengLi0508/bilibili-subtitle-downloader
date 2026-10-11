@@ -66,7 +66,7 @@ fn main() -> eframe::Result<()> {
                 .get(index + 2)
                 .ok_or_else(|| anyhow::anyhow!("缺少预览输出路径"))?;
             if args[index] == "--wechat-article" {
-                wechat_article::open_reader(input, std::path::Path::new(output))
+                wechat_article::open_reader_with_pdf(input, std::path::Path::new(output), true)
             } else {
                 wechat_channels::open_reader(input, std::path::Path::new(output))
             }

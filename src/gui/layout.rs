@@ -18,12 +18,8 @@ fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(egui::RichText::new(text.into()).size(12.0).color(MUTED));
 }
 
-fn section(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).size(13.0).strong().color(INK));
-        ui.add(egui::Label::new(egui::RichText::new(detail).size(11.0).color(MUTED)).truncate())
-            .on_hover_text(detail);
-    });
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.label(egui::RichText::new(title).size(13.0).strong().color(INK));
     ui.add_space(4.0);
 }
 
@@ -58,6 +54,82 @@ fn choice<T: PartialEq>(ui: &mut egui::Ui, value: &mut T, option: T, label: impl
     }
 }
 
+fn quiet_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new(label).size(12.0).color(MUTED))
+            .frame(false)
+            .min_size(egui::vec2(68.0, 28.0)),
+    )
+    .clicked()
+}
+
+fn link_input(
+    ui: &mut egui::Ui,
+    link: &mut String,
+    mode: Mode,
+    xhs_video: bool,
+    busy: bool,
+    width: f32,
+) -> egui::Response {
+    let hint = match mode {
+        Mode::Youtube => "粘贴 YouTube 视频或 Shorts 链接…",
+        Mode::WebText => "在这里粘贴知乎链接…",
+        Mode::Douyin => "粘贴抖音视频链接或整段分享文字…",
+        Mode::Xhs if xhs_video => "粘贴小红书视频链接或整段分享文字…",
+        Mode::Xhs => "粘贴小红书图文链接或整段分享文字…",
+        Mode::BiliText => "粘贴 B站 opus 图文、动态或 cv 专栏链接…",
+        _ => "在这里粘贴视频链接…",
+    };
+    ui.set_width(width);
+    egui::Frame::default()
+        .fill(egui::Color32::from_rgb(248, 250, 253))
+        .stroke(egui::Stroke::new(1.0_f32, BORDER))
+        .rounding(11.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+        .show(ui, |ui| {
+            ui.add_enabled(
+                !busy,
+                egui::TextEdit::singleline(link)
+                    .frame(false)
+                    .hint_text(hint)
+                    .desired_width(ui.available_width())
+                    .margin(egui::vec2(2.0, 4.0)),
+            )
+        })
+        .inner
+}
+
+fn inline_fetch_button(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> bool {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(13.0)
+                .strong()
+                .color(if enabled { egui::Color32::WHITE } else { MUTED }),
+        )
+        .fill(if enabled {
+            BLUE
+        } else {
+            egui::Color32::from_rgb(248, 250, 253)
+        })
+        .stroke(if enabled {
+            egui::Stroke::NONE
+        } else {
+            egui::Stroke::new(1.0_f32, BORDER)
+        })
+        .rounding(10.0)
+        .min_size(egui::vec2(width, 37.0)),
+    )
+    .on_hover_text(if enabled {
+        "获取链接内容并预览"
+    } else {
+        "粘贴链接后可获取"
+    })
+    .clicked()
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.render_reference(ctx);
@@ -68,6 +140,22 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn source_ready_to_export(&self) -> bool {
+        ((self.mode == Mode::BiliText || (self.mode == Mode::Douyin && self.douyin_article_mode))
+            && self.douyin_article.is_some())
+            || (self.mode == Mode::WebText && self.zhihu_content.is_some())
+    }
+
+    fn fetch_link_content(&mut self) {
+        if (self.mode == Mode::Douyin && self.douyin_article_mode) || self.mode == Mode::BiliText {
+            self.spawn_read_douyin_article();
+        } else if self.mode == Mode::WebText {
+            self.spawn_fetch_zhihu();
+        } else {
+            self.spawn_fetch_video();
+        }
+    }
+
     pub(super) fn source_card(&mut self, ui: &mut egui::Ui) {
         if self.mode == Mode::Twitter {
             self.twitter_source_card(ui);
@@ -158,11 +246,10 @@ impl App {
                     }
                     if self.mode != Mode::Transcribe {
                         ui.add_space(6.0);
-                        if secondary_button(ui, "检测评论", !self.busy) {
+                        if quiet_button(ui, "检测评论", !self.busy) {
                             self.spawn_comments();
                         }
-                        if self.comments.is_some() && secondary_button(ui, "选择评论", !self.busy)
-                        {
+                        if self.comments.is_some() && quiet_button(ui, "选择评论", !self.busy) {
                             self.comment_window_open = true;
                         }
                     }
@@ -186,72 +273,76 @@ impl App {
             if self.mode == Mode::Transcribe {
                 self.file_drop_zone(ui);
             } else {
-                section(
-                    ui,
-                    "内容链接",
-                    match self.mode {
-                        Mode::Youtube => "视频、Shorts 或分享短链",
-                        Mode::BiliText => "图文、动态或专栏分享链接",
-                        Mode::Subtitle => "视频链接、短链或 BV / AV 号",
-                        Mode::Video => "B站视频链接、短链或 BV / AV 号",
-                        Mode::Douyin => "粘贴链接或整段分享文字",
-                        Mode::Xhs => "粘贴笔记链接或整段分享文字",
-                        _ => "专栏文章、问题或回答链接",
-                    },
-                );
-                let response = egui::Frame::default()
-                    .fill(egui::Color32::from_rgb(248, 250, 253))
-                    .stroke(egui::Stroke::new(1.0_f32, BORDER))
-                    .rounding(11.0)
-                    .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-                    .show(ui, |ui| {
-                        ui.add_enabled(
-                            !self.busy,
-                            egui::TextEdit::singleline(&mut self.link)
-                                .frame(false)
-                                .hint_text(if self.mode == Mode::Youtube {
-                                    "粘贴 YouTube 视频或 Shorts 链接…"
-                                } else if self.mode == Mode::WebText {
-                                    "在这里粘贴知乎链接…"
-                                } else if self.mode == Mode::Douyin {
-                                    "粘贴抖音视频链接或整段分享文字…"
-                                } else if self.mode == Mode::Xhs {
-                                    if self.xhs_video {
-                                        "粘贴小红书视频链接或整段分享文字…"
-                                    } else {
-                                        "粘贴小红书图文链接或整段分享文字…"
-                                    }
-                                } else {
-                                    if self.mode == Mode::BiliText {
-                                        "粘贴 B站 opus 图文、动态或 cv 专栏链接…"
-                                    } else {
-                                        "在这里粘贴视频链接…"
-                                    }
-                                })
-                                .desired_width(ui.available_width())
-                                .margin(egui::vec2(2.0, 4.0)),
-                        )
+                section(ui, "内容链接");
+                let ready_to_export = self.source_ready_to_export();
+                let fetched = match self.mode {
+                    Mode::Youtube => self.youtube.is_some(),
+                    _ => self.video.is_some() || self.external.is_some(),
+                };
+                let button_label = if self.busy {
+                    "处理中…"
+                } else if fetched {
+                    "重新获取"
+                } else {
+                    "获取"
+                };
+                let button_width = 106.0;
+                let button_enabled = !self.busy && !self.link.trim().is_empty();
+                let (response, fetch_clicked) = if !ready_to_export && ui.available_width() >= 430.0
+                {
+                    ui.horizontal(|ui| {
+                        let field_width =
+                            ui.available_width() - button_width - ui.spacing().item_spacing.x;
+                        let response = ui
+                            .allocate_ui_with_layout(
+                                egui::vec2(field_width, 0.0),
+                                egui::Layout::top_down(egui::Align::LEFT),
+                                |ui| {
+                                    link_input(
+                                        ui,
+                                        &mut self.link,
+                                        self.mode,
+                                        self.xhs_video,
+                                        self.busy,
+                                        field_width,
+                                    )
+                                },
+                            )
+                            .inner;
+                        let clicked =
+                            inline_fetch_button(ui, button_label, button_enabled, button_width);
+                        (response, clicked)
                     })
-                    .inner;
+                    .inner
+                } else {
+                    let width = ui.available_width();
+                    let response = link_input(
+                        ui,
+                        &mut self.link,
+                        self.mode,
+                        self.xhs_video,
+                        self.busy,
+                        width,
+                    );
+                    let clicked = if ready_to_export {
+                        false
+                    } else {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            inline_fetch_button(ui, button_label, button_enabled, button_width)
+                        })
+                        .inner
+                    };
+                    (response, clicked)
+                };
                 if response.changed() {
                     if self.link_changed() {
                         return;
                     }
                 }
-                if response.lost_focus()
-                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                    && !self.busy
-                    && !self.link.trim().is_empty()
-                {
-                    if (self.mode == Mode::Douyin && self.douyin_article_mode)
-                        || self.mode == Mode::BiliText
-                    {
-                        self.spawn_read_douyin_article();
-                    } else if self.mode == Mode::WebText {
-                        self.spawn_fetch_zhihu();
-                    } else {
-                        self.spawn_fetch_video();
-                    }
+                let enter_pressed =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if (fetch_clicked || enter_pressed) && !self.busy && !self.link.trim().is_empty() {
+                    self.fetch_link_content();
                 }
             }
 
@@ -260,7 +351,12 @@ impl App {
                 let before = self.bili_local_transcribe;
                 ui.add_enabled_ui(!self.busy, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label("识别方式");
+                        ui.label(
+                            egui::RichText::new("识别方式")
+                                .size(12.0)
+                                .strong()
+                                .color(INK),
+                        );
                         choice(
                             ui,
                             &mut self.bili_local_transcribe,
@@ -281,14 +377,6 @@ impl App {
                     self.streams.clear();
                     self.status = "已切换识别方式，请重新获取视频信息".into();
                 }
-                caption(
-                    ui,
-                    if self.bili_local_transcribe {
-                        "只下载当前分P音频，本地转写可区分说话人。"
-                    } else {
-                        "使用 B站现有字幕，此方式不区分说话人。"
-                    },
-                );
             }
             if (!matches!(self.mode, Mode::Video | Mode::Douyin)
                 || ((self.mode == Mode::Douyin && self.douyin_article_mode)
@@ -305,7 +393,12 @@ impl App {
 
                 ui.add_enabled_ui(!self.busy, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("导出格式").size(12.0).color(MUTED));
+                        ui.label(
+                            egui::RichText::new("导出格式")
+                                .size(12.0)
+                                .strong()
+                                .color(INK),
+                        );
                         for format in TextFormat::ALL {
                             let (label, detail) = match format {
                                 TextFormat::Txt => ("TXT", "纯文本，适合复制和编辑"),
@@ -330,7 +423,12 @@ impl App {
                     let previous_scope = self.zhihu_all_answers;
                     ui.add_enabled_ui(!self.busy, |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            ui.label("获取范围");
+                            ui.label(
+                                egui::RichText::new("获取范围")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(INK),
+                            );
                             choice(
                                 ui,
                                 &mut self.zhihu_all_answers,
@@ -415,7 +513,8 @@ impl App {
                                     choice(ui, &mut self.transcribe_language, value.into(), label);
                                 }
                             });
-                        ui.checkbox(&mut self.speaker_diarization, "区分说话人");
+                        ui.checkbox(&mut self.speaker_diarization, "区分说话人")
+                            .on_hover_text("说话人编号不代表真实身份");
                         if self.speaker_diarization {
                             egui::ComboBox::from_id_salt("speaker_count")
                                 .width(95.0)
@@ -505,97 +604,39 @@ impl App {
                             "请与网页核对正文是否完整；图片中的文字暂不支持。"
                         },
                     );
-                } else {
-                    caption(
-                        ui,
-                        "在官方页面展开文章后获取文字；获取后先预览，再确认导出。",
-                    );
                 }
             }
-            let enabled = !self.busy
-                && if self.mode == Mode::Transcribe {
-                    self.media_file.is_some() && self.ffmpeg_ok
-                } else {
-                    !self.link.trim().is_empty()
+            if self.mode == Mode::Transcribe || self.source_ready_to_export() {
+                ui.add_space(6.0);
+                let enabled = !self.busy
+                    && if self.mode == Mode::Transcribe {
+                        self.media_file.is_some() && self.ffmpeg_ok
+                    } else {
+                        !self.link.trim().is_empty()
+                    };
+                let action = match self.mode {
+                    Mode::Transcribe => "开始识别",
+                    Mode::BiliText => "确认导出图文",
+                    Mode::Douyin => "确认导出文章",
+                    Mode::WebText => "确认导出",
+                    _ => unreachable!(),
                 };
-            let action = match self.mode {
-                Mode::Twitter | Mode::WechatArticle | Mode::WechatChannels => unreachable!(),
-                Mode::Youtube => "获取视频与字幕列表",
-                Mode::Subtitle => {
-                    if self.bili_local_transcribe {
-                        "获取视频信息"
-                    } else {
-                        "获取字幕"
+                if super::reference::wide_button(
+                    ui,
+                    if self.busy { "正在处理…" } else { action },
+                    ui.available_width(),
+                    enabled,
+                    super::reference::Symbol::Play,
+                ) {
+                    match self.mode {
+                        Mode::BiliText | Mode::Douyin => self.spawn_export_douyin_article(),
+                        Mode::Transcribe => self.spawn_transcribe(),
+                        Mode::WebText => self.spawn_export_zhihu(),
+                        _ => unreachable!(),
                     }
-                }
-                Mode::Video => "获取视频",
-                Mode::Xhs => {
-                    if self.xhs_video {
-                        "获取小红书视频"
-                    } else {
-                        "获取小红书图文"
-                    }
-                }
-                Mode::BiliText => {
-                    if self.douyin_article.is_some() {
-                        "确认导出图文"
-                    } else {
-                        "打开并获取 B站图文"
-                    }
-                }
-                Mode::Douyin => {
-                    if self.douyin_article_mode {
-                        if self.douyin_article.is_some() {
-                            "确认导出文章"
-                        } else {
-                            "打开并获取长文章"
-                        }
-                    } else {
-                        if self.gallery_mode {
-                            "获取抖音图文"
-                        } else {
-                            "获取抖音视频"
-                        }
-                    }
-                }
-                Mode::Transcribe => "开始识别",
-                Mode::WebText => {
-                    if self.zhihu_content.is_some() {
-                        "确认导出"
-                    } else {
-                        "获取内容"
-                    }
-                }
-            };
-            if super::reference::wide_button(
-                ui,
-                if self.busy { "正在处理…" } else { action },
-                ui.available_width(),
-                enabled,
-                super::reference::Symbol::Play,
-            ) {
-                match self.mode {
-                    Mode::BiliText | Mode::Douyin
-                        if self.mode == Mode::BiliText || self.douyin_article_mode =>
-                    {
-                        if self.douyin_article.is_some() {
-                            self.spawn_export_douyin_article();
-                        } else {
-                            self.spawn_read_douyin_article();
-                        }
-                    }
-                    Mode::Transcribe => self.spawn_transcribe(),
-                    Mode::WebText => {
-                        if self.zhihu_content.is_some() {
-                            self.spawn_export_zhihu();
-                        } else {
-                            self.spawn_fetch_zhihu();
-                        }
-                    }
-                    _ => self.spawn_fetch_video(),
                 }
             }
-            // Keep platform errors next to the action, even if the footer is off screen.
+            // Keep a platform switch near the input if a link was pasted in the wrong workspace.
             if (self.status.contains("YouTube")
                 || self.status.contains("抖音")
                 || self.status.contains("小红书")
@@ -638,23 +679,6 @@ impl App {
                     }
                 }
             }
-            if !compact && matches!(self.mode, Mode::Subtitle | Mode::Transcribe) {
-                ui.add_space(5.0);
-                ui.vertical_centered(|ui| {
-                    caption(
-                        ui,
-                        if self.mode == Mode::Subtitle {
-                            if self.bili_local_transcribe {
-                                "获取视频信息 → 选择分P → 下载音频并本地识别"
-                            } else {
-                                "AI 字幕需要登录后获取，支持多种文档格式"
-                            }
-                        } else {
-                            "识别完成后保存所选格式与 SRT 字幕，全程在本机处理"
-                        },
-                    );
-                });
-            }
             if !compact {
                 ui.add_space(3.0);
             }
@@ -684,6 +708,9 @@ impl App {
             if let Some(video) = self.youtube.clone() {
                 card().show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    if ui.ctx().screen_rect().height() >= 680.0 {
+                        section(ui, "字幕已就绪");
+                    }
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(&video.title)
@@ -714,10 +741,9 @@ impl App {
                                     }
                                 });
                         });
-                        if primary_button(ui, "导出字幕", !self.busy) {
+                        if primary_button(ui, "导出字幕与 SRT", !self.busy) {
                             self.spawn_export_youtube();
                         }
-                        caption(ui, "保存所选文档格式，并同时保存 SRT 时间轴字幕");
                     }
                 });
             }
@@ -739,12 +765,6 @@ impl App {
                         "图文已就绪"
                     } else {
                         "视频已就绪"
-                    },
-                    match self.mode {
-                        Mode::Douyin => "抖音",
-                        Mode::Xhs => "小红书",
-                        Mode::Youtube => "YouTube",
-                        _ => "哔哩哔哩",
                     },
                 );
                 ui.add(
@@ -779,16 +799,6 @@ impl App {
                 ) {
                     self.spawn_download_external();
                 }
-                if ui.ctx().screen_rect().height() >= 680.0 {
-                    caption(
-                        ui,
-                        if is_gallery {
-                            "图片按顺序保存，完成后可直接打开"
-                        } else {
-                            "自动选择最佳画质，保存为 MP4"
-                        },
-                    );
-                }
             });
             ui.add_space(6.0);
             return;
@@ -803,6 +813,9 @@ impl App {
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             let _ = bvid;
+            if ui.ctx().screen_rect().height() >= 680.0 {
+                section(ui, "视频已就绪");
+            }
             ui.add(
                 egui::Label::new(egui::RichText::new(&title).size(15.0).strong().color(INK))
                     .truncate(),
@@ -858,10 +871,9 @@ impl App {
                     });
                 });
                 ui.add_space(6.0);
-                if primary_button(ui, "下载视频", !self.busy && !self.streams.is_empty()) {
+                if primary_button(ui, "下载 MP4", !self.busy && !self.streams.is_empty()) {
                     self.spawn_download_video();
                 }
-                caption(ui, "保存为 MP4；高画质视频需要登录 B站");
                 if !self.ffmpeg_ok {
                     caption(ui, "音视频合并组件未就绪，部分画质暂不可下载。");
                 }
@@ -869,10 +881,6 @@ impl App {
                 if primary_button(ui, "下载音频并本地识别", !self.busy && self.ffmpeg_ok) {
                     self.spawn_bili_transcribe();
                 }
-                caption(
-                    ui,
-                    "保存音频、所选文档格式与 SRT；说话人编号不代表真实身份。",
-                );
             } else if !self.tracks.is_empty() {
                 ui.add_enabled_ui(!self.busy, |ui| {
                     ui.horizontal(|ui| {
@@ -912,23 +920,48 @@ impl App {
     }
 
     pub(super) fn result_card(&mut self, ui: &mut egui::Ui) {
-        if !self.busy
-            && matches!(
-                self.status.as_str(),
-                "粘贴B站视频链接，然后点「获取」"
-                    | "粘贴内容链接，自动识别平台；获取后预览并保存"
-                    | "已切换内容类型，请重新获取"
-                    | "文件已就绪，选择格式后点击开始识别"
-            )
+        if self.status.trim().is_empty()
+            || !self.busy
+                && matches!(
+                    self.status.as_str(),
+                    "粘贴B站视频链接，然后点「获取」"
+                        | "粘贴内容链接，自动识别平台；获取后预览并保存"
+                        | "已切换内容类型，请重新获取"
+                        | "文件已就绪，选择格式后点击开始识别"
+                )
         {
             self.reveal_result = false;
             return;
         }
         let compact = ui.ctx().screen_rect().height() < 680.0;
+        let is_error = ["失败", "错误", "过期", "未登录", "没有"]
+            .iter()
+            .any(|word| self.status.contains(word));
+        let is_success = ["已保存", "成功", "导出完成", "已获取", "获取到"]
+            .iter()
+            .any(|word| self.status.contains(word));
+        let (surface, outline) = if self.busy {
+            (
+                egui::Color32::from_rgb(244, 248, 255),
+                egui::Color32::from_rgb(207, 222, 249),
+            )
+        } else if is_error {
+            (
+                egui::Color32::from_rgb(255, 248, 248),
+                egui::Color32::from_rgb(243, 218, 221),
+            )
+        } else if is_success {
+            (
+                egui::Color32::from_rgb(246, 251, 249),
+                egui::Color32::from_rgb(209, 233, 221),
+            )
+        } else {
+            (egui::Color32::from_rgb(247, 249, 253), BORDER)
+        };
         ui.add_space(if compact { 3.0 } else { 8.0 });
         egui::Frame::default()
-            .fill(egui::Color32::from_rgb(247, 249, 253))
-            .stroke(egui::Stroke::new(1.0_f32, BORDER))
+            .fill(surface)
+            .stroke(egui::Stroke::new(1.0_f32, outline))
             .rounding(11.0)
             .inner_margin(egui::Margin::symmetric(
                 10.0,
@@ -1021,7 +1054,13 @@ mod tests {
 
     #[test]
     fn all_workspaces_render_at_normal_and_compact_sizes() {
-        for size in [[1000.0, 760.0], [780.0, 600.0]] {
+        for size in [
+            [1000.0, 760.0],
+            [940.0, 640.0],
+            [900.0, 560.0],
+            [780.0, 600.0],
+            [780.0, 540.0],
+        ] {
             for (index, mode) in [
                 Mode::Subtitle,
                 Mode::Video,
@@ -1087,6 +1126,7 @@ mod tests {
                         images: vec!["https://mmbiz.qpic.cn/example.png".into(); 3],
                         author: "示例作者".into(),
                         published_at: "2026-10-07".into(),
+                        native_pdf: None,
                     }));
                 }
                 if index == 18 {

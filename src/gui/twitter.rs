@@ -160,48 +160,44 @@ impl App {
                 .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            egui::RichText::new("已获取")
+                            egui::RichText::new("● 已获取帖子")
                                 .size(11.0)
                                 .strong()
                                 .color(X_BLUE),
                         );
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&post.title)
-                                    .size(13.0)
-                                    .strong()
-                                    .color(X_INK),
-                            )
-                            .truncate(),
-                        )
-                        .on_hover_text(&post.title);
-                    });
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} · {} 张配图 · {} 个视频",
-                            post.author,
-                            post.images.len(),
-                            post.video_count
-                        ))
-                        .size(11.0)
-                        .color(X_MUTED),
-                    );
-                    if !compact {
-                        let excerpt = post
-                            .body
-                            .chars()
-                            .take(120)
-                            .collect::<String>()
-                            .replace('\n', " ");
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(excerpt).size(11.0).color(X_MUTED),
-                            )
-                            .truncate(),
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · {} 张配图 · {} 个视频",
+                                post.author,
+                                post.images.len(),
+                                post.video_count
+                            ))
+                            .size(11.0)
+                            .color(X_MUTED),
                         );
-                    }
+                    });
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&post.title)
+                                .size(14.0)
+                                .strong()
+                                .color(X_INK),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&post.title);
+                    let excerpt = post
+                        .body
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                        .replace('\n', " ");
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(excerpt).size(11.0).color(X_MUTED))
+                            .truncate(),
+                    );
                     if let Some(warning) = &post.warning {
                         ui.add(
                             egui::Label::new(
@@ -265,25 +261,13 @@ impl App {
             }
         }
         ui.add_space(if compact { 4.0 } else { 7.0 });
-        ui.horizontal_wrapped(|ui| {
-            if secondary_button(
-                ui,
-                "官方网页读取",
-                !self.busy && !self.link.trim().is_empty(),
-            ) {
-                self.spawn_twitter(true);
-            }
-            ui.label(
-                egui::RichText::new("长文不完整或需要登录时，在网页内展开后读取")
-                    .size(11.0)
-                    .color(X_MUTED),
-            );
-        });
-        ui.label(
-            egui::RichText::new("仅获取当前帖子；评论需单独检测并勾选，图片文字不做 OCR。")
-                .size(11.0)
-                .color(X_MUTED),
-        );
+        if secondary_button(
+            ui,
+            "官方网页读取（长文 / 登录）",
+            !self.busy && !self.link.trim().is_empty(),
+        ) {
+            self.spawn_twitter(true);
+        }
     }
 
     pub(super) fn twitter_preview(&mut self, ctx: &egui::Context) {
@@ -293,9 +277,30 @@ impl App {
                 .default_width(640.0)
                 .max_width((ctx.screen_rect().width() - 80.0).max(300.0))
                 .show(ctx, |ui| {
-                    ui.heading(&post.title);
+                    ui.label(
+                        egui::RichText::new(&post.title)
+                            .size(18.0)
+                            .strong()
+                            .color(X_INK),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} · {} 张配图 · {} 个视频",
+                            post.author,
+                            post.images.len(),
+                            post.video_count
+                        ))
+                        .size(12.0)
+                        .color(X_MUTED),
+                    );
+                    ui.add_space(7.0);
+                    ui.separator();
                     if let Some(warning) = &post.warning {
-                        ui.label(warning);
+                        ui.label(
+                            egui::RichText::new(warning)
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(150, 95, 30)),
+                        );
                     }
                     egui::ScrollArea::vertical()
                         .max_height((ctx.screen_rect().height() - 190.0).max(150.0))

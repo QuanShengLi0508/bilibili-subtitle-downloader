@@ -69,7 +69,6 @@ impl App {
                     ui.selectable_value(&mut reverse, false, "正序 ↑");
                     ui.selectable_value(&mut reverse, true, "倒序 ↓");
                     self.comment_sort = crate::comments::Sort::from_options(basis, reverse);
-                    ui.label(self.comment_sort.label());
                     if before != self.comment_sort {
                         self.comment_page = 0;
                     }

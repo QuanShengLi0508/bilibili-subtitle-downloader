@@ -86,6 +86,7 @@ struct App {
     wechat_article: Option<Arc<crate::wechat_article::Article>>,
     wechat_video: Option<crate::wechat_channels::Video>,
     wechat_preview_open: bool,
+    wechat_reader_cancel: Option<Arc<AtomicBool>>,
     comments: Option<Arc<crate::comments::Comments>>,
     comment_selected: Vec<bool>,
     comment_window_open: bool,
@@ -361,6 +362,7 @@ impl App {
             wechat_article: None,
             wechat_video: None,
             wechat_preview_open: false,
+            wechat_reader_cancel: None,
             comments: None,
             comment_selected: Vec::new(),
             comment_window_open: false,
@@ -1013,27 +1015,55 @@ impl App {
                         Err(error) => self.status = format!("X 保存失败：{error:#}"),
                     }
                 }
-                Msg::WechatArticleLoaded(result) => match result {
-                    Ok(Some(article)) => {
-                        self.status = format!(
-                            "已获取公众号正文 {} 字、{} 张配图，核对后确认导出",
-                            article.body.chars().count(),
-                            article.images.len()
-                        );
-                        self.wechat_article = Some(Arc::new(article));
+                Msg::WechatArticleLoaded(result) => {
+                    let was_cancelled = self
+                        .wechat_reader_cancel
+                        .as_ref()
+                        .is_some_and(|cancelled| cancelled.load(Ordering::Relaxed));
+                    self.wechat_reader_cancel = None;
+                    match result {
+                        Ok(Some(article)) => {
+                            self.status = format!(
+                                "已获取公众号正文 {} 字、{} 张配图，核对后确认导出",
+                                article.body.chars().count(),
+                                article.images.len()
+                            );
+                            self.wechat_article = Some(Arc::new(article));
+                        }
+                        Ok(None) => {
+                            self.status = if was_cancelled {
+                                "已取消公众号网页读取"
+                            } else {
+                                "已关闭公众号窗口，未导出文件"
+                            }
+                            .into()
+                        }
+                        Err(error) => self.status = format!("公众号获取失败：{error:#}"),
                     }
-                    Ok(None) => self.status = "已关闭公众号窗口，未导出文件".into(),
-                    Err(error) => self.status = format!("公众号获取失败：{error:#}"),
-                },
-                Msg::WechatVideoLoaded(result) => match result {
-                    Ok(Some(video)) => {
-                        self.status =
-                            "已检测到网页视频，确认后下载；保存前会检查文件能否播放".into();
-                        self.wechat_video = Some(video);
+                }
+                Msg::WechatVideoLoaded(result) => {
+                    let was_cancelled = self
+                        .wechat_reader_cancel
+                        .as_ref()
+                        .is_some_and(|cancelled| cancelled.load(Ordering::Relaxed));
+                    self.wechat_reader_cancel = None;
+                    match result {
+                        Ok(Some(video)) => {
+                            self.status =
+                                "已检测到网页视频，确认后下载；保存前会检查文件能否播放".into();
+                            self.wechat_video = Some(video);
+                        }
+                        Ok(None) => {
+                            self.status = if was_cancelled {
+                                "已取消视频号网页读取"
+                            } else {
+                                "未读取视频。请在官方窗口播放后，点击底部「读取当前视频」"
+                            }
+                            .into()
+                        }
+                        Err(error) => self.status = format!("视频号获取失败：{error:#}"),
                     }
-                    Ok(None) => self.status = "已关闭视频号窗口，未下载文件".into(),
-                    Err(error) => self.status = format!("视频号获取失败：{error:#}"),
-                },
+                }
                 Msg::WechatSaved(result) => {
                     self.video_progress = None;
                     match result {
@@ -1475,8 +1505,8 @@ fn apply_style(ctx: &egui::Context) {
 pub fn run() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions::default();
     options.viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1040.0, 700.0])
-        .with_min_inner_size([780.0, 600.0])
+        .with_inner_size([900.0, 560.0])
+        .with_min_inner_size([780.0, 540.0])
         .with_icon(eframe::icon_data::from_png_bytes(LOGO_PNG).expect("Invalid application icon"))
         .with_title("拾文");
     eframe::run_native(

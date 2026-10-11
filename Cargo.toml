@@ -1,6 +1,6 @@
 [package]
 name = "bili-subtitle-downloader"
-version = "1.6.2"
+version = "1.6.3"
 edition = "2021"
 default-run = "bili-subtitle-downloader"
 description = "拾文：字幕提取、视频下载与音视频转文字"
@@ -21,10 +21,14 @@ docx-rs = "0.4"
 printpdf = { version = "0.7", default-features = false, features = ["font_subsetting"] }
 tempfile = "3"
 ttf-parser = "0.19"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+lopdf = { version = "0.31", default-features = false, features = ["nom_parser"] }
 
 [target.'cfg(windows)'.dependencies]
 wry = "0.57"
 winit = "0.30"
+webview2-com = "0.39.1"
+windows = { version = "0.62.2", features = ["Win32_Foundation"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

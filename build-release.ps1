@@ -5,6 +5,7 @@ $env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA 'BiliSubtitleDownloader\buil
 
 Push-Location $projectRoot
 try {
+    & (Join-Path $projectRoot 'scripts\prepare-ffmpeg.ps1')
     foreach ($required in @('sherpa-onnx-offline-speaker-diarization.exe','segmentation.onnx','embedding.onnx')) {
         if (!(Test-Path -LiteralPath (Join-Path $projectRoot "diarization\$required"))) {
             & (Join-Path $projectRoot 'scripts\prepare-speakers.ps1')
@@ -33,13 +34,20 @@ try {
     Copy-Item -LiteralPath $builtExe -Destination (Join-Path $packageDir 'bili-subtitle-downloader.exe') -Force
     Copy-Item -LiteralPath $builtCli -Destination (Join-Path $packageDir 'bili-subtitle-cli.exe') -Force
     Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $packageDir -Force
-    foreach ($relative in @('tools\node.exe', 'tools\yt-dlp.exe', 'tools\ffmpeg.exe', 'tools\ffprobe.exe', 'whisper\whisper-cli.exe', 'whisper\ggml-base-q5_1.bin')) {
+    foreach ($relative in @('tools\node.exe', 'tools\yt-dlp.exe', 'whisper\whisper-cli.exe', 'whisper\ggml-base-q5_1.bin')) {
         $source = Join-Path $projectRoot $relative
         if (Test-Path -LiteralPath $source) {
             $destination = Join-Path $packageDir $relative
             New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force | Out-Null
             Copy-Item -LiteralPath $source -Destination $destination -Force
         }
+    }
+    $sharedFfmpeg = Join-Path $projectRoot 'tools\ffmpeg-shared'
+    New-Item -ItemType Directory -Path (Join-Path $packageDir 'tools') -Force | Out-Null
+    foreach ($name in @('ffmpeg.exe', 'ffprobe.exe', 'avcodec-63.dll', 'avdevice-63.dll',
+            'avfilter-12.dll', 'avformat-63.dll', 'avutil-61.dll', 'swresample-7.dll',
+            'swscale-10.dll')) {
+        Copy-Item -LiteralPath (Join-Path $sharedFfmpeg $name) -Destination (Join-Path $packageDir 'tools') -Force
     }
     Copy-Item -Path (Join-Path $projectRoot 'whisper\*.dll') -Destination (Join-Path $packageDir 'whisper') -Force
     Copy-Item -Path (Join-Path $projectRoot 'runtime\*.dll') -Destination $packageDir -Force

@@ -109,22 +109,39 @@ pub(super) fn wide_button(
     ui.add_enabled_ui(enabled, |ui| {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
+        let foreground = if enabled {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_rgb(103, 121, 148)
+        };
         ui.painter().rect_filled(
             rect,
             10.0,
-            if !ui.is_enabled() {
-                egui::Color32::from_rgb(203, 214, 233)
+            if !enabled {
+                egui::Color32::from_rgb(241, 245, 251)
             } else if response.hovered() {
                 egui::Color32::from_rgb(37, 85, 210)
             } else {
                 BLUE
             },
         );
-        let galley = ui.painter().layout_no_wrap(
-            label.into(),
-            egui::FontId::proportional(17.0),
-            egui::Color32::WHITE,
-        );
+        if !enabled || response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                10.0,
+                egui::Stroke::new(
+                    1.0_f32,
+                    if enabled {
+                        egui::Color32::from_rgb(31, 75, 191)
+                    } else {
+                        egui::Color32::from_rgb(216, 226, 240)
+                    },
+                ),
+            );
+        }
+        let galley =
+            ui.painter()
+                .layout_no_wrap(label.into(), egui::FontId::proportional(17.0), foreground);
         let x = rect.center().x - (galley.size().x + 34.0) / 2.0;
         icon(
             ui.painter(),
@@ -133,12 +150,12 @@ pub(super) fn wide_button(
                 egui::vec2(22.0, 22.0),
             ),
             symbol,
-            egui::Color32::WHITE,
+            foreground,
         );
         ui.painter().galley(
             egui::pos2(x + 34.0, rect.center().y - galley.size().y / 2.0),
             galley,
-            egui::Color32::WHITE,
+            foreground,
         );
         response.clicked()
             || (response.has_focus()
@@ -168,7 +185,14 @@ impl App {
     pub(super) fn render_reference(&mut self, ctx: &egui::Context) {
         self.poll_messages(ctx);
         let compact = ctx.screen_rect().height() < 680.0;
-        let margin = if compact { 12.0 } else { 20.0 };
+        let dense = ctx.screen_rect().height() < 580.0;
+        let margin = if dense {
+            10.0
+        } else if compact {
+            12.0
+        } else {
+            20.0
+        };
         if self.busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -188,7 +212,7 @@ impl App {
             }
         }
         egui::SidePanel::left("platform_sidebar")
-            .exact_width(if ctx.screen_rect().width() < 900.0 {
+            .exact_width(if ctx.screen_rect().width() <= 900.0 {
                 142.0
             } else {
                 166.0
@@ -198,21 +222,26 @@ impl App {
                 egui::Frame::default()
                     .fill(egui::Color32::WHITE)
                     .stroke(egui::Stroke::new(1.0_f32, LINE))
-                    .inner_margin(egui::Margin::symmetric(12.0, 14.0)),
+                    .inner_margin(egui::Margin::symmetric(
+                        if dense { 10.0 } else { 12.0 },
+                        if dense { 10.0 } else { 14.0 },
+                    )),
             )
             .show(ctx, |ui| {
+                if dense {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                }
                 ui.horizontal(|ui| {
                     ui.image((self.logo.id(), egui::vec2(32.0, 32.0)));
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("拾文").size(18.0).strong().color(INK));
-                        ui.label(
-                            egui::RichText::new("内容保存工作台")
-                                .size(10.0)
-                                .color(MUTED),
-                        );
-                    });
+                    ui.label(egui::RichText::new("拾文").size(18.0).strong().color(INK));
                 });
-                ui.add_space(if compact { 12.0 } else { 19.0 });
+                ui.add_space(if dense {
+                    8.0
+                } else if compact {
+                    12.0
+                } else {
+                    19.0
+                });
                 ui.label(
                     egui::RichText::new("内容平台")
                         .size(11.0)
@@ -231,12 +260,35 @@ impl App {
                     (Mode::WechatArticle, "微信公众号", Symbol::Document),
                     (Mode::Transcribe, "本地转写", Symbol::Wave),
                 ] {
+                    if mode == Mode::Transcribe {
+                        ui.add_space(if compact { 3.0 } else { 12.0 });
+                        ui.separator();
+                        if !compact {
+                            ui.add_space(3.0);
+                            ui.label(
+                                egui::RichText::new("本地工具")
+                                    .size(11.0)
+                                    .strong()
+                                    .color(MUTED),
+                            );
+                            ui.add_space(3.0);
+                        }
+                    }
                     let selected = self.mode == mode
                         || (mode == Mode::Subtitle
                             && matches!(self.mode, Mode::Video | Mode::BiliText));
                     ui.add_enabled_ui(!self.busy, |ui| {
                         let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), if compact { 33.0 } else { 38.0 }),
+                            egui::vec2(
+                                ui.available_width(),
+                                if dense {
+                                    31.0
+                                } else if compact {
+                                    33.0
+                                } else {
+                                    38.0
+                                },
+                            ),
                             egui::Sense::click(),
                         );
                         if selected || response.hovered() {
@@ -380,40 +432,27 @@ impl App {
                     ))
                     .inner_margin(egui::Margin::symmetric(
                         margin,
-                        if compact { 8.0 } else { 12.0 },
+                        if dense {
+                            6.0
+                        } else if compact {
+                            8.0
+                        } else {
+                            12.0
+                        },
                     )),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        let title = self.mode.label();
-                        ui.label(egui::RichText::new(title).size(19.0).strong().color(INK));
-                        ui.label(
-                            egui::RichText::new(if self.mode == Mode::Transcribe {
-                                "音视频转写与多角色识别"
-                            } else {
-                                "获取、预览并保存内容"
-                            })
-                            .size(11.0)
-                            .color(MUTED),
-                        );
-                    });
-                    ui.add_space((ui.available_width() - 176.0).max(0.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.vertical(|ui| {
+                    let title = self.mode.label();
+                    ui.label(egui::RichText::new(title).size(19.0).strong().color(INK));
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 0.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
                             if self.mode == Mode::Twitter {
                                 if header_action(ui, "X 登录", !self.busy) {
                                     self.spawn_twitter_login();
                                 }
-                                ui.label(
-                                    egui::RichText::new(if crate::twitter::has_saved_session() {
-                                        "已保存 X 登录会话"
-                                    } else {
-                                        "在官方网页直接登录"
-                                    })
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
                             } else if self.is_wechat() {
                                 if header_action(
                                     ui,
@@ -422,11 +461,6 @@ impl App {
                                 ) {
                                     self.spawn_wechat_reader();
                                 }
-                                ui.label(
-                                    egui::RichText::new("在网页内完成登录或验证")
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
                             } else if self.mode == Mode::Youtube {
                                 if header_action(ui, "导入登录状态", !self.busy) {
                                     if let Some(path) = rfd::FileDialog::new()
@@ -439,85 +473,50 @@ impl App {
                                         };
                                     }
                                 }
-                                ui.label(
-                                    egui::RichText::new("需能访问 YouTube")
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
                             } else if self.mode == Mode::Douyin {
                                 if header_action(ui, "抖音登录", !self.busy) {
                                     self.spawn_douyin_login();
                                 }
-                                ui.label(
-                                    egui::RichText::new(
-                                        if external::douyin_cookie_path().is_file() {
-                                            "已保存访问会话"
-                                        } else {
-                                            "无法解析时可尝试登录"
-                                        },
-                                    )
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
                             } else if self.mode == Mode::Xhs {
                                 if header_action(ui, "小红书登录", !self.busy) {
                                     self.spawn_xhs_login();
                                 }
-                                ui.label(
-                                    egui::RichText::new("需要时在官方网页登录")
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
                             } else if self.mode == Mode::WebText {
                                 if header_action(ui, "知乎登录", !self.busy) {
                                     self.spawn_zhihu_login();
                                 }
-                                ui.label(
-                                    egui::RichText::new(
-                                        if crate::zhihu_login::has_saved_session() {
-                                            "知乎已登录"
-                                        } else {
-                                            "登录后获取完整正文"
-                                        },
-                                    )
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
-                            } else if self.mode == Mode::Transcribe {
-                                ui.label(egui::RichText::new("本地处理").size(12.0).color(BLUE));
-                                ui.label(
-                                    egui::RichText::new("无需登录，选择文件即可")
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
-                            } else if self.logged_in {
+                            } else if self.mode != Mode::Transcribe && self.logged_in {
                                 if header_action(ui, "退出登录", !self.busy) {
                                     Client::clear_saved_cookies();
                                     self.logged_in = false;
                                     self.status = "已退出登录".into();
                                 }
-                                ui.label(egui::RichText::new("B站已登录").size(12.0).color(MUTED));
-                            } else {
+                            } else if self.mode != Mode::Transcribe {
                                 if header_action(ui, "扫码登录", !self.busy) {
                                     self.spawn_qr_login();
                                 }
-                                ui.label(
-                                    egui::RichText::new("登录后获取 AI 字幕")
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
                             }
-                        });
-                    });
+                        },
+                    );
                 });
             });
+        let show_intro = ctx.screen_rect().height() >= 550.0
+            && self.link.trim().is_empty()
+            && self.media_file.is_none()
+            && !self.busy;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::default()
                     .fill(CANVAS)
                     .inner_margin(egui::Margin::symmetric(
                         margin,
-                        if compact { 8.0 } else { 12.0 },
+                        if dense {
+                            6.0
+                        } else if compact {
+                            8.0
+                        } else {
+                            12.0
+                        },
                     )),
             )
             .show(ctx, |ui| {
@@ -530,26 +529,45 @@ impl App {
                         egui::Layout::top_down(egui::Align::LEFT),
                         |ui| {
                             ui.set_width(width);
-                            egui::Frame::default()
-                                .fill(egui::Color32::WHITE)
-                                .stroke(egui::Stroke::new(1.0_f32, LINE))
-                                .rounding(15.0)
-                                .inner_margin(egui::Margin::same(if compact { 8.0 } else { 12.0 }))
-                                .show(ui, |ui| {
-                                    if compact {
-                                        ui.spacing_mut().item_spacing.y = 3.0;
-                                    }
-                                    ui.set_width(ui.available_width());
-                                    self.source_card(ui);
-                                    self.media_card(ui);
-                                    self.result_card(ui);
-                                });
+                            if show_intro {
+                                ui.add_space(7.0);
+                                ui.label(
+                                    egui::RichText::new("新建提取")
+                                        .size(17.0)
+                                        .strong()
+                                        .color(INK),
+                                );
+                                ui.add_space(10.0);
+                                self.source_card(ui);
+                                self.media_card(ui);
+                                self.result_card(ui);
+                            } else {
+                                egui::Frame::default()
+                                    .fill(egui::Color32::WHITE)
+                                    .stroke(egui::Stroke::new(1.0_f32, LINE))
+                                    .rounding(15.0)
+                                    .inner_margin(egui::Margin::same(if compact {
+                                        8.0
+                                    } else {
+                                        12.0
+                                    }))
+                                    .show(ui, |ui| {
+                                        if compact {
+                                            ui.spacing_mut().item_spacing.y = 3.0;
+                                        }
+                                        ui.set_width(ui.available_width());
+                                        self.source_card(ui);
+                                        self.media_card(ui);
+                                        self.result_card(ui);
+                                    });
+                            }
                         },
                     );
                 });
-                if !compact
+                if ctx.screen_rect().height() >= 550.0
                     && self.link.trim().is_empty()
                     && self.media_file.is_none()
+                    && !self.saved_files.is_empty()
                     && !self.busy
                 {
                     ui.add_space(12.0);
@@ -561,7 +579,7 @@ impl App {
                             egui::Layout::top_down(egui::Align::LEFT),
                             |ui| {
                                 ui.set_width(width);
-                                self.quick_start_card(ui);
+                                self.recent_saved_card(ui);
                             },
                         );
                     });
@@ -598,14 +616,6 @@ impl App {
                 .default_width(460.0)
                 .show(ctx, |ui| {
                     ui.label(egui::RichText::new("文件保存位置").strong());
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "拾文 {} · 设置自动保存",
-                            env!("CARGO_PKG_VERSION")
-                        ))
-                        .small()
-                        .color(MUTED),
-                    );
                     ui.add_space(8.0);
                     ui.add(egui::Label::new(self.output_dir.display().to_string()).truncate())
                         .on_hover_text(self.output_dir.display().to_string());
@@ -654,88 +664,45 @@ impl App {
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
     }
 
-    fn quick_start_card(&mut self, ui: &mut egui::Ui) {
+    fn recent_saved_card(&mut self, ui: &mut egui::Ui) {
+        let Some(path) = self.saved_files.first().cloned() else {
+            return;
+        };
         egui::Frame::default()
             .fill(egui::Color32::WHITE)
             .stroke(egui::Stroke::new(1.0_f32, LINE))
-            .rounding(15.0)
-            .inner_margin(egui::Margin::symmetric(16.0, 13.0))
+            .rounding(13.0)
+            .inner_margin(egui::Margin::symmetric(16.0, 12.0))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                if let Some(path) = self.saved_files.first().cloned() {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new("最近保存")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(MUTED),
-                            );
-                            let name = path.file_name().unwrap_or_default().to_string_lossy();
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(name).size(14.0).color(INK))
-                                    .truncate(),
-                            )
-                            .on_hover_text(path.display().to_string());
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if secondary_button(ui, "所在位置", true) {
-                                if let Err(error) = open_saved_file(&path, true) {
-                                    self.status = format!("打开失败：{error}");
-                                }
-                            }
-                            if secondary_button(ui, "打开文件", true) {
-                                if let Err(error) = open_saved_file(&path, false) {
-                                    self.status = format!("打开失败：{error}");
-                                }
-                            }
-                        });
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("最近保存")
+                                .size(12.0)
+                                .strong()
+                                .color(MUTED),
+                        );
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(name).size(14.0).color(INK))
+                                .truncate(),
+                        )
+                        .on_hover_text(path.display().to_string());
                     });
-                } else {
-                    ui.label(
-                        egui::RichText::new("简单三步，保存你需要的内容")
-                            .size(14.0)
-                            .strong()
-                            .color(INK),
-                    );
-                    ui.add_space(7.0);
-                    ui.columns(3, |columns| {
-                        for (index, (title, detail)) in [
-                            (
-                                if self.mode == Mode::Transcribe {
-                                    "选择音视频文件"
-                                } else {
-                                    "粘贴内容链接"
-                                },
-                                if self.mode == Mode::Transcribe {
-                                    "全程在本机处理"
-                                } else {
-                                    "分享文字也可以"
-                                },
-                            ),
-                            ("先核对预览", "确认正文与媒体"),
-                            ("保存并打开", "不用去文件夹里找"),
-                        ]
-                        .iter()
-                        .enumerate()
-                        {
-                            columns[index].horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("0{}", index + 1))
-                                        .size(14.0)
-                                        .strong()
-                                        .color(BLUE),
-                                );
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(*title).size(12.0).strong().color(INK),
-                                    );
-                                    ui.label(egui::RichText::new(*detail).size(11.0).color(MUTED));
-                                });
-                            });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if secondary_button(ui, "所在位置", true) {
+                            if let Err(error) = open_saved_file(&path, true) {
+                                self.status = format!("打开失败：{error}");
+                            }
+                        }
+                        if secondary_button(ui, "打开文件", true) {
+                            if let Err(error) = open_saved_file(&path, false) {
+                                self.status = format!("打开失败：{error}");
+                            }
                         }
                     });
-                }
+                });
             });
     }
 
@@ -798,18 +765,6 @@ impl App {
                                 )
                                 .truncate(),
                             );
-                            ui.label(
-                                egui::RichText::new("拖入文件，或点击右侧选择文件")
-                                    .size(11.0)
-                                    .color(MUTED),
-                            );
-                            if !compact {
-                                ui.label(
-                                    egui::RichText::new("支持 MP4、MKV、MP3、WAV 等格式")
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
-                            }
                         },
                     );
                     if wide_button(

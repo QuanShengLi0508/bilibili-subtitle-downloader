@@ -129,11 +129,7 @@ impl App {
             .get(mode.key())
             .cloned()
             .unwrap_or_default();
-        self.status = if mode == Mode::Transcribe {
-            "选择音频或视频文件，然后开始识别".into()
-        } else {
-            format!("{} · 粘贴内容链接，获取后预览并保存", mode.label())
-        };
+        self.status.clear();
     }
 
     pub(super) fn link_changed(&mut self) -> bool {
@@ -204,7 +200,6 @@ impl App {
                 .default_width(560.0)
                 .max_width((ctx.screen_rect().width() - 80.0).max(300.0))
                 .show(ctx, |ui| {
-                    ui.label("最近 10 项；文件和图文文件夹都可直接打开");
                     egui::ScrollArea::vertical()
                         .max_height((ctx.screen_rect().height() - 180.0).max(150.0))
                         .show(ui, |ui| {

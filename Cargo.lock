@@ -528,13 +528,15 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bili-subtitle-downloader"
-version = "1.6.2"
+version = "1.6.3"
 dependencies = [
  "anyhow",
  "cookie_store 0.21.1",
  "docx-rs",
  "eframe",
  "html2text",
+ "image",
+ "lopdf",
  "md5 0.7.0",
  "printpdf",
  "qrcode",
@@ -544,6 +546,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "ttf-parser 0.19.2",
+ "webview2-com",
+ "windows 0.62.2",
  "winit",
  "winres",
  "wry",
@@ -2456,12 +2460,23 @@ dependencies = [
  "byteorder-lite",
  "color_quant",
  "gif",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
  "tiff",
  "zune-core",
  "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]
@@ -2730,6 +2745,7 @@ dependencies = [
  "linked-hash-map",
  "log",
  "md5 0.7.0",
+ "nom",
  "pom",
  "time",
  "weezl",
@@ -2811,6 +2827,12 @@ dependencies = [
  "objc",
  "paste",
 ]
+
+[[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "miniz_oxide"
@@ -2943,6 +2965,16 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
+]
 
 [[package]]
 name = "num-conv"

@@ -57,23 +57,29 @@ impl App {
         self.busy = true;
         self.video_progress = None;
         self.status = if article {
-            "在官方窗口阅读全文；需要验证时请手动完成，再点击获取正文"
+            "请切换到已打开的公众号窗口，阅读后点击右下角「获取文章正文」"
         } else {
-            "在官方窗口打开并播放视频，按页面提示登录，再点击检测视频"
+            "在官方窗口播放视频，然后点击页面底部「读取当前视频」"
         }
         .into();
         let input = self.link.clone();
         let tx = self.tx.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.wechat_reader_cancel = Some(cancelled.clone());
         thread::spawn(move || {
+            let mut native_pdf_path = None;
             let message = (|| -> Result<Option<String>> {
                 let response = tempfile::NamedTempFile::new()?;
+                if article {
+                    native_pdf_path = Some(crate::wechat_article::native_pdf_path(response.path()));
+                }
                 let mut command = std::process::Command::new(std::env::current_exe()?);
                 #[cfg(windows)]
                 {
                     use std::os::windows::process::CommandExt;
                     command.creation_flags(0x08000000);
                 }
-                let status = command
+                let mut child = command
                     .arg(if article {
                         "--wechat-article"
                     } else {
@@ -81,7 +87,24 @@ impl App {
                     })
                     .arg(&input)
                     .arg(response.path())
-                    .status()?;
+                    .spawn()?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
+                let status = loop {
+                    if cancelled.load(Ordering::Relaxed) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Ok(None);
+                    }
+                    if let Some(status) = child.try_wait()? {
+                        break status;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        anyhow::bail!("官方网页等待超过 15 分钟，请重新打开");
+                    }
+                    thread::sleep(std::time::Duration::from_millis(100));
+                };
                 match status.code() {
                     Some(0) => Ok(Some(std::fs::read_to_string(response.path())?)),
                     Some(2) => Ok(None),
@@ -92,9 +115,18 @@ impl App {
             })();
             if article {
                 let result = message.and_then(|m| {
-                    m.map(|s| crate::wechat_article::Article::from_message(&s))
-                        .transpose()
+                    m.map(|s| {
+                        let mut article = crate::wechat_article::Article::from_message(&s)?;
+                        if let Some(path) = &native_pdf_path {
+                            article.attach_native_pdf(path)?;
+                        }
+                        Ok(article)
+                    })
+                    .transpose()
                 });
+                if let Some(path) = native_pdf_path {
+                    let _ = std::fs::remove_file(path);
+                }
                 let _ = tx.send(Msg::WechatArticleLoaded(result));
             } else {
                 let result = message.and_then(|m| {
@@ -148,15 +180,6 @@ impl App {
                 .size(15.0)
                 .strong()
                 .color(WECHAT_INK),
-            );
-            ui.label(
-                egui::RichText::new(if article_mode {
-                    "阅读并核对全文后导出"
-                } else {
-                    "在官方网页检测可播放视频"
-                })
-                .size(11.0)
-                .color(WECHAT_MUTED),
             );
         });
         ui.add_space(if compact { 6.0 } else { 10.0 });
@@ -239,33 +262,33 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(
-                                egui::RichText::new("已获取")
+                                egui::RichText::new("● 已获取文章")
                                     .size(11.0)
                                     .strong()
                                     .color(WECHAT_BLUE),
                             );
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&article.title)
-                                        .size(13.0)
-                                        .strong()
-                                        .color(WECHAT_INK),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(&article.title);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} 字 · {} 张配图",
+                                    article.body.chars().count(),
+                                    article.images.len()
+                                ))
+                                .size(11.0)
+                                .color(WECHAT_MUTED),
+                            );
                         });
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} 字 · {} 张配图",
-                                article.body.chars().count(),
-                                article.images.len()
-                            ))
-                            .size(11.0)
-                            .color(WECHAT_MUTED),
-                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&article.title)
+                                    .size(14.0)
+                                    .strong()
+                                    .color(WECHAT_INK),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&article.title);
                         for (label, text) in [("开头", first), ("末尾", last)] {
                             ui.add(
                                 egui::Label::new(
@@ -290,11 +313,6 @@ impl App {
                     });
             }
         } else {
-            ui.label(
-                egui::RichText::new("支持网页可播放的普通视频；微信专属卡片、加密视频暂不支持。")
-                    .size(11.0)
-                    .color(WECHAT_MUTED),
-            );
             if let Some(video) = self.wechat_video.clone() {
                 ui.add_space(if compact { 6.0 } else { 10.0 });
                 egui::Frame::default()
@@ -304,24 +322,22 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("已检测")
-                                    .size(11.0)
+                        ui.label(
+                            egui::RichText::new("● 已检测到视频")
+                                .size(11.0)
+                                .strong()
+                                .color(WECHAT_BLUE),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&video.title)
+                                    .size(14.0)
                                     .strong()
-                                    .color(WECHAT_BLUE),
-                            );
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&video.title)
-                                        .size(13.0)
-                                        .strong()
-                                        .color(WECHAT_INK),
-                                )
-                                .truncate(),
+                                    .color(WECHAT_INK),
                             )
-                            .on_hover_text(&video.title);
-                        });
+                            .truncate(),
+                        )
+                        .on_hover_text(&video.title);
                         if secondary_button(ui, "重新检测", !self.busy) {
                             self.spawn_wechat_reader();
                         }
@@ -343,7 +359,7 @@ impl App {
         } else if ready {
             "确认下载视频"
         } else {
-            "打开网页并检测视频"
+            "打开视频网页 · 播放后点「读取当前视频」"
         };
         if super::reference::wide_button(
             ui,
@@ -362,16 +378,14 @@ impl App {
                 self.spawn_wechat_reader();
             }
         }
-        ui.add_space(if compact { 4.0 } else { 7.0 });
-        ui.label(
-            egui::RichText::new(if article_mode {
-                "先核对全文，再导出文档；配图单独保存。图片内文字不做 OCR。"
-            } else {
-                "需要登录时在官方窗口扫码；下载完成后，可在本地转写中识别文字和说话人。"
-            })
-            .size(11.0)
-            .color(WECHAT_MUTED),
-        );
+        if self.busy {
+            if let Some(cancelled) = &self.wechat_reader_cancel {
+                if secondary_button(ui, "取消网页读取", true) {
+                    cancelled.store(true, Ordering::Relaxed);
+                    self.status = "正在取消网页读取…".into();
+                }
+            }
+        }
         // Errors remain visible in full rather than disappearing in a truncated footer.
         if self.status.contains("失败") || self.status.starts_with("请粘贴") {
             ui.add_space(6.0);
@@ -388,8 +402,25 @@ impl App {
             egui::Window::new("微信公众号 · 全文预览")
                 .open(&mut self.wechat_preview_open)
                 .default_width(640.0)
+                .max_width((ctx.screen_rect().width() - 80.0).max(300.0))
                 .show(ctx, |ui| {
-                    ui.heading(&article.title);
+                    ui.label(
+                        egui::RichText::new(&article.title)
+                            .size(18.0)
+                            .strong()
+                            .color(WECHAT_INK),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} 字 · {} 张配图",
+                            article.body.chars().count(),
+                            article.images.len()
+                        ))
+                        .size(12.0)
+                        .color(WECHAT_MUTED),
+                    );
+                    ui.add_space(7.0);
+                    ui.separator();
                     egui::ScrollArea::vertical()
                         .max_height((ctx.screen_rect().height() - 180.0).max(150.0))
                         .show(ui, |ui| {

@@ -27,6 +27,63 @@
     return true;
   };
   const text = node => clean(node?.innerText || node?.textContent || '');
+  async function prepareImagesForPrint(root) {
+    const imageNodes = [...root.querySelectorAll('img')].filter(visible);
+    const ready = imageNodes.map(img => {
+      const raw = img.getAttribute('data-src') || img.currentSrc || img.getAttribute('src') || '';
+      const url = imageURL(raw);
+      if (!url) return Promise.resolve(true); // extract() reports unsupported image sources.
+      img.loading = 'eager';
+      if (img.src !== url) img.src = url;
+      if (img.complete) return Promise.resolve(img.naturalWidth > 0);
+      return new Promise(resolve => {
+        let timer;
+        const finish = ok => {
+          clearTimeout(timer);
+          img.removeEventListener('load', loaded);
+          img.removeEventListener('error', failed);
+          resolve(ok);
+        };
+        const loaded = () => finish(img.naturalWidth > 0);
+        const failed = () => finish(false);
+        img.addEventListener('load', loaded, {once: true});
+        img.addEventListener('error', failed, {once: true});
+        timer = setTimeout(() => finish(false), 30000);
+      });
+    });
+    return (await Promise.all(ready)).every(Boolean);
+  }
+  function installPrintStyles(doc) {
+    if (doc.getElementById('shiwen-wechat-print-style')) return;
+    const style = doc.createElement('style');
+    style.id = 'shiwen-wechat-print-style';
+    style.textContent = '@media print { .shiwen-print-hide, #shiwen-wechat-reader { display: none !important; } #js_content img { max-width: 100% !important; break-inside: avoid; } #js_content { overflow: visible !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }';
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+  function keepArticleOnlyForPrint(doc) {
+    const leaves = [
+      doc.querySelector('#activity-name'),
+      doc.querySelector('#meta_content'),
+      doc.querySelector('#js_name'),
+      doc.querySelector('#publish_time'),
+      doc.querySelector('#copyright_logo'),
+      doc.querySelector('#js_ip_wording_wrp'),
+      doc.querySelector('#js_content'),
+    ].filter(Boolean);
+    const ancestors = new Set();
+    const kept = new Set(leaves);
+    for (const leaf of leaves) {
+      for (let parent = leaf.parentElement; parent; parent = parent.parentElement) {
+        ancestors.add(parent);
+        kept.add(parent);
+      }
+    }
+    for (const parent of ancestors) {
+      for (const child of parent.children) {
+        if (!kept.has(child)) child.classList.add('shiwen-print-hide');
+      }
+    }
+  }
   function extract(doc, sourceURL) {
     const source = articleURL(sourceURL);
     if (!source) throw new Error('请在微信公众号的官方文章页面获取正文。');
@@ -87,17 +144,28 @@
     host.id = 'shiwen-wechat-reader';
     host.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483647';
     const shadow = host.attachShadow({mode:'closed'});
-    shadow.innerHTML = `<style>:host{all:initial}section{font:14px system-ui,sans-serif;background:#fff;color:#202124;padding:16px;border:1px solid #ddd;border-radius:14px;box-shadow:0 4px 24px #0002;max-width:300px}button{background:#07a55c;color:white;border:0;border-radius:8px;padding:10px 16px;margin-top:10px;cursor:pointer}p{margin:0 0 6px;line-height:1.5}</style><section><p><b>拾文 · 微信公众号</b></p><p id="tip">文章显示完整后获取正文和配图，回到拾文预览并确认导出。</p><button>获取文章正文</button></section>`;
-    shadow.querySelector('button').onclick = () => {
+    shadow.innerHTML = `<style>:host{all:initial}section{font:14px system-ui,sans-serif;background:#fff;color:#202124;padding:16px;border:1px solid #ddd;border-radius:14px;box-shadow:0 4px 24px #0002;max-width:300px}button{background:#07a55c;color:white;border:0;border-radius:8px;padding:10px 16px;margin-top:10px;cursor:pointer}button:disabled{opacity:.6;cursor:wait}p{margin:0 0 6px;line-height:1.5}</style><section><p><b>拾文 · 微信公众号</b></p><p id="tip">文章显示完整后获取正文和配图，回到拾文预览并确认导出。</p><button>获取文章正文</button></section>`;
+    shadow.querySelector('button').onclick = async () => {
       const tip = shadow.getElementById('tip');
+      const button = shadow.querySelector('button');
+      button.disabled = true;
       try {
+        // Validate access before attempting to load every lazy image for the print engine.
+        extract(document, location.href);
+        tip.textContent = '正在加载文章配图…';
+        const printReady = await prepareImagesForPrint(document.querySelector('#js_content'));
         const data = extract(document, location.href);
+        data.print_ready = printReady;
+        installPrintStyles(document);
+        keepArticleOnlyForPrint(document);
         if (!window.ipc?.postMessage) throw new Error('请从拾文打开文章窗口。');
         const message = JSON.stringify(data);
         if (new TextEncoder().encode(message).byteLength > 4000000) throw new Error('文章数据超过可处理大小，本次未保存。');
-        tip.textContent = `已读取正文与 ${data.images.length} 张配图，正在返回拾文…`;
+        tip.textContent = printReady
+          ? `已读取正文与 ${data.images.length} 张配图，正在保留原版排版…`
+          : `已读取正文；部分配图未加载，导出时将单独保存。`;
         window.ipc.postMessage(message);
-      } catch (error) { tip.textContent = error.message; }
+      } catch (error) { tip.textContent = error.message; button.disabled = false; }
     };
     document.body.appendChild(host);
   };

@@ -29,7 +29,10 @@ fn media_host(url: &reqwest::Url) -> bool {
 fn official_page(url: &reqwest::Url) -> bool {
     match url.host_str() {
         Some("channels.weixin.qq.com") => {
-            matches!(url.path(), "/" | "/web/pages/feed" | "/web/pages/home")
+            matches!(
+                url.path(),
+                "/" | "/web/pages/feed" | "/web/pages/home" | "/finder-preview/pages/sph"
+            )
         }
         Some("weixin.qq.com") => url.path().starts_with("/sph/"),
         _ => false,
@@ -379,12 +382,16 @@ mod tests {
                 .is_some()
         );
         assert!(link("https://weixin.qq.com/sph/Abc123").is_some());
+        assert!(
+            link("https://channels.weixin.qq.com/finder-preview/pages/sph?id=Abc123").is_some()
+        );
         for invalid in [
             "https://channels.weixin.qq.com.evil.test/web/pages/feed?oid=abc",
             "https://evil.test/?url=https://channels.weixin.qq.com/web/pages/feed?oid=abc",
             "https://user:pass@channels.weixin.qq.com/web/pages/feed",
             "https://channels.weixin.qq.com:8080/web/pages/feed",
             "https://weixin.qq.com/unknown",
+            "https://channels.weixin.qq.com/finder-preview/pages/other?id=Abc123",
             "#视频号：某视频",
         ] {
             assert!(link(invalid).is_none(), "{invalid}");
@@ -416,6 +423,15 @@ mod tests {
         assert!(valid_ipc_source(
             &message,
             "https://channels.weixin.qq.com/web/pages/feed?oid=a"
+        ));
+        let redirected = serde_json::json!({"source":"https://channels.weixin.qq.com/finder-preview/pages/sph?id=Abc123", "media_url":"https://finder.video.qq.com/video.mp4"}).to_string();
+        assert!(valid_ipc_source(
+            &redirected,
+            "https://channels.weixin.qq.com/finder-preview/pages/sph?id=Abc123"
+        ));
+        assert!(!valid_ipc_source(
+            &redirected,
+            "https://channels.weixin.qq.com/finder-preview/pages/sph?id=Different"
         ));
         assert!(!valid_ipc_source(
             &message,
